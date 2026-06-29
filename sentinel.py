@@ -1,12 +1,14 @@
 import argparse
-import logging
-import sys
-import json
 import csv
 import io
+import json
+import logging
+import sys
 import urllib.request
+
 import boto3
 from botocore.exceptions import ClientError
+
 
 # Setup logging
 def setup_logging(level):
@@ -63,7 +65,7 @@ class AWSSentinelAuditor:
             except ClientError as e:
                 if e.response['Error']['Code'] == 'NoSuchPublicAccessBlockConfiguration':
                     logger.warning(f"❌ S3 Bucket '{name}': WARNING - Public Access NOT Blocked!")
-                    
+
                     if remediate:
                         if self.dry_run:
                             logger.info(f"[DRY-RUN] Would enable Public Access Block for S3 bucket '{name}'")
@@ -136,7 +138,7 @@ class AWSSentinelAuditor:
                             remediation_status = "Manual Intervention Required"
                         else:
                             remediation_status = "None (Remediation not requested)"
-                            
+
                         findings.append({
                             "Service": "IAM",
                             "Region": "global",
@@ -198,7 +200,7 @@ class AWSSentinelAuditor:
                     for rule in sg.get('IpPermissions', []):
                         from_port = rule.get('FromPort')
                         to_port = rule.get('ToPort')
-                        
+
                         port_22_exposed = False
                         if from_port is not None and to_port is not None:
                             if from_port <= 22 <= to_port:
@@ -211,7 +213,7 @@ class AWSSentinelAuditor:
                                 if ip.get('CidrIp') == '0.0.0.0/0':
                                     logger.warning(f"❌ SG {group_name} ({group_id}) [{region}]: Port 22 is OPEN to everyone!")
                                     is_secure = False
-                                    
+
                                     if remediate:
                                         if self.dry_run:
                                             logger.info(f"[DRY-RUN] Would revoke Port 22 open rule from '0.0.0.0/0' for SG {group_name} ({group_id})")
@@ -231,7 +233,7 @@ class AWSSentinelAuditor:
                                                     del rule_to_revoke['FromPort']
                                                 if to_port is None:
                                                     del rule_to_revoke['ToPort']
-                                                    
+
                                                 regional_ec2.revoke_security_group_ingress(
                                                     GroupId=group_id,
                                                     IpPermissions=[rule_to_revoke]
@@ -274,19 +276,19 @@ def print_table(findings):
     if not findings:
         logger.info("No findings to display.")
         return
-    
+
     headers = ["Service", "Region", "ResourceID", "Status", "Severity", "RemediationStatus", "Finding"]
     widths = {h: len(h) for h in headers}
-    
+
     for f in findings:
         for h in headers:
             val = str(f.get(h, ''))
             if len(val) > widths[h]:
                 widths[h] = len(val)
-                
+
     row_format = " | ".join([f"{{:<{widths[h]}}}" for h in headers])
     border = "-+-".join(["-" * widths[h] for h in headers])
-    
+
     print("\n" + border)
     print(row_format.format(*headers))
     print(border)
@@ -472,7 +474,7 @@ def main():
         logger.warning("--dry-run specified without --remediate. It will have no effect on audit findings.")
 
     auditor = AWSSentinelAuditor(dry_run=args.dry_run)
-    
+
     # Determine regions to scan
     scan_regions = []
     if "ec2" in args.services:
