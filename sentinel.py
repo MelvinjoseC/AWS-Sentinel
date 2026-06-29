@@ -4,6 +4,7 @@ import sys
 import json
 import csv
 import io
+import urllib.request
 import boto3
 from botocore.exceptions import ClientError
 
@@ -318,6 +319,100 @@ def export_findings(findings, filename, fmt):
         logger.info(f"Report successfully saved to {filename} in {fmt.upper()} format.")
     except Exception as e:
         logger.error(f"Failed to export report to {filename}: {e}")
+
+def send_slack_notification(webhook_url, findings):
+    """Sends failed findings alert to Slack webhook."""
+    failed = [f for f in findings if f["Status"] == "FAIL"]
+    if not failed:
+        logger.info("No compliance failures detected. Skipping Slack notification.")
+        return
+
+    text = f"🚨 *AWS Sentinel Security Alert*\nAudit completed with *{len(failed)}* compliance failures."
+    blocks = [
+        {
+            "type": "section",
+            "text": {"type": "mrkdwn", "text": text}
+        },
+        {"type": "divider"}
+    ]
+
+    for f in failed[:10]:
+        item_text = (
+            f"• *{f['Service']}* | {f['Region']} | *{f['Severity']}*\n"
+            f"  Resource: `{f['ResourceID']}`\n"
+            f"  Finding: {f['Finding']}\n"
+            f"  Remediation: `{f['RemediationStatus']}`"
+        )
+        blocks.append({
+            "type": "section",
+            "text": {"type": "mrkdwn", "text": item_text}
+        })
+
+    if len(failed) > 10:
+        blocks.append({
+            "type": "section",
+            "text": {"type": "mrkdwn", "text": f"...and {len(failed) - 10} more findings."}
+        })
+
+    payload = {"blocks": blocks}
+
+    try:
+        req = urllib.request.Request(
+            webhook_url,
+            data=json.dumps(payload).encode('utf-8'),
+            headers={'Content-Type': 'application/json'}
+        )
+        with urllib.request.urlopen(req) as response:
+            if response.status == 200:
+                logger.info("Slack notification sent successfully.")
+            else:
+                logger.error(f"Failed to send Slack notification: Status {response.status}")
+    except Exception as e:
+        logger.error(f"Error sending Slack notification: {e}")
+
+def send_teams_notification(webhook_url, findings):
+    """Sends failed findings alert to Microsoft Teams webhook."""
+    failed = [f for f in findings if f["Status"] == "FAIL"]
+    if not failed:
+        logger.info("No compliance failures detected. Skipping MS Teams notification.")
+        return
+
+    payload = {
+        "@type": "MessageCard",
+        "@context": "http://schema.org/extensions",
+        "themeColor": "D70000",
+        "summary": "AWS Sentinel Security Alert",
+        "title": "🚨 AWS Sentinel Security Compliance Alerts",
+        "text": f"Audit completed with **{len(failed)}** compliance failures.",
+        "sections": []
+    }
+
+    section = {
+        "activityTitle": "Critical & High Severity Findings",
+        "facts": []
+    }
+
+    for f in failed[:15]:
+        section["facts"].append({
+            "name": f"{f['Service']} ({f['Region']}) - {f['Severity']}",
+            "value": f"**Resource:** `{f['ResourceID']}`\n**Finding:** {f['Finding']}\n**Remediation:** {f['RemediationStatus']}"
+        })
+
+    payload["sections"].append(section)
+
+    try:
+        req = urllib.request.Request(
+            webhook_url,
+            data=json.dumps(payload).encode('utf-8'),
+            headers={'Content-Type': 'application/json'}
+        )
+        with urllib.request.urlopen(req) as response:
+            if response.status in [200, 201]:
+                logger.info("MS Teams notification sent successfully.")
+            else:
+                logger.error(f"Failed to send MS Teams notification: Status {response.status}")
+    except Exception as e:
+        logger.error(f"Error sending MS Teams notification: {e}")
 
 def main():
     parser = argparse.ArgumentParser(description="AWS Sentinel: Automated Security Compliance Auditor")
