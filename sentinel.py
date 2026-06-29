@@ -1,6 +1,9 @@
 import argparse
 import logging
 import sys
+import json
+import csv
+import io
 import boto3
 from botocore.exceptions import ClientError
 
@@ -46,35 +49,35 @@ class AWSSentinelAuditor:
                 logger.info(f"✅ S3 Bucket '{name}': Secure (Public Access Blocked)")
                 findings.append({
                     "Service": "S3",
+                    "Region": "global",
                     "ResourceID": name,
                     "ResourceName": name,
                     "Status": "PASS",
                     "Finding": "Public Access Block is enabled",
-                    "Severity": "Low",
-                    "Region": "global"
+                    "Severity": "Low"
                 })
             except ClientError as e:
                 if e.response['Error']['Code'] == 'NoSuchPublicAccessBlockConfiguration':
                     logger.warning(f"❌ S3 Bucket '{name}': WARNING - Public Access NOT Blocked!")
                     findings.append({
                         "Service": "S3",
+                        "Region": "global",
                         "ResourceID": name,
                         "ResourceName": name,
                         "Status": "FAIL",
                         "Finding": "Public Access Block is not enabled",
-                        "Severity": "High",
-                        "Region": "global"
+                        "Severity": "High"
                     })
                 else:
                     logger.error(f"Error checking public access block for bucket '{name}': {e}")
                     findings.append({
                         "Service": "S3",
+                        "Region": "global",
                         "ResourceID": name,
                         "ResourceName": name,
                         "Status": "ERROR",
                         "Finding": f"Failed to retrieve configuration: {e.response['Error']['Message']}",
-                        "Severity": "Medium",
-                        "Region": "global"
+                        "Severity": "Medium"
                     })
         return findings
 
@@ -98,34 +101,34 @@ class AWSSentinelAuditor:
                         logger.warning(f"❌ IAM User '{username}': MFA is DISABLED!")
                         findings.append({
                             "Service": "IAM",
+                            "Region": "global",
                             "ResourceID": user['Arn'],
                             "ResourceName": username,
                             "Status": "FAIL",
                             "Finding": "Multi-Factor Authentication (MFA) is disabled",
-                            "Severity": "High",
-                            "Region": "global"
+                            "Severity": "High"
                         })
                     else:
                         logger.info(f"✅ IAM User '{username}': MFA is Active")
                         findings.append({
                             "Service": "IAM",
+                            "Region": "global",
                             "ResourceID": user['Arn'],
                             "ResourceName": username,
                             "Status": "PASS",
                             "Finding": "Multi-Factor Authentication (MFA) is active",
-                            "Severity": "Low",
-                            "Region": "global"
+                            "Severity": "Low"
                         })
                 except ClientError as e:
                     logger.error(f"Error checking MFA for user '{username}': {e}")
                     findings.append({
                         "Service": "IAM",
+                        "Region": "global",
                         "ResourceID": user['Arn'],
                         "ResourceName": username,
                         "Status": "ERROR",
                         "Finding": f"Failed to retrieve MFA devices: {e.response['Error']['Message']}",
-                        "Severity": "Medium",
-                        "Region": "global"
+                        "Severity": "Medium"
                     })
         return findings
 
@@ -169,26 +172,78 @@ class AWSSentinelAuditor:
                                     is_secure = False
                                     findings.append({
                                         "Service": "EC2",
+                                        "Region": region,
                                         "ResourceID": group_id,
                                         "ResourceName": group_name,
                                         "Status": "FAIL",
                                         "Finding": "Port 22 (SSH) is open to the public internet (0.0.0.0/0)",
-                                        "Severity": "Critical",
-                                        "Region": region
+                                        "Severity": "Critical"
                                     })
 
                     if is_secure:
                         logger.debug(f"✅ SG {group_name} ({group_id}) [{region}]: Port 22 is not publicly open")
                         findings.append({
                             "Service": "EC2",
+                            "Region": region,
                             "ResourceID": group_id,
                             "ResourceName": group_name,
                             "Status": "PASS",
                             "Finding": "Port 22 (SSH) is restricted",
-                            "Severity": "Low",
-                            "Region": region
+                            "Severity": "Low"
                         })
         return findings
+
+def print_table(findings):
+    """Formats and prints findings as a text table."""
+    if not findings:
+        logger.info("No findings to display.")
+        return
+    
+    headers = ["Service", "Region", "ResourceID", "Status", "Severity", "Finding"]
+    widths = {h: len(h) for h in headers}
+    
+    for f in findings:
+        for h in headers:
+            val = str(f.get(h, ''))
+            if len(val) > widths[h]:
+                widths[h] = len(val)
+                
+    row_format = " | ".join([f"{{:<{widths[h]}}}" for h in headers])
+    border = "-+-".join(["-" * widths[h] for h in headers])
+    
+    print("\n" + border)
+    print(row_format.format(*headers))
+    print(border)
+    for f in findings:
+        print(row_format.format(*[str(f.get(h, '')) for h in headers]))
+    print(border + "\n")
+
+def export_findings(findings, filename, fmt):
+    """Exports findings to a file in the specified format."""
+    try:
+        if fmt == "json":
+            with open(filename, 'w') as f:
+                json.dump(findings, f, indent=4)
+        elif fmt == "csv":
+            with open(filename, 'w', newline='') as f:
+                writer = csv.DictWriter(f, fieldnames=["Service", "Region", "ResourceID", "ResourceName", "Status", "Severity", "Finding"])
+                writer.writeheader()
+                for r in findings:
+                    # DictWriter needs exact keys matching fieldnames
+                    row = {k: r.get(k, '') for k in ["Service", "Region", "ResourceID", "ResourceName", "Status", "Severity", "Finding"]}
+                    writer.writerow(row)
+        elif fmt == "table":
+            # Redirect stdout to write table to file
+            old_stdout = sys.stdout
+            sys.stdout = io.StringIO()
+            print_table(findings)
+            table_content = sys.stdout.getvalue()
+            sys.stdout = old_stdout
+            with open(filename, 'w') as f:
+                f.write(table_content)
+        logger.info(f"Report successfully saved to {filename} in {fmt.upper()} format.")
+    except Exception as e:
+        logger.error(f"Failed to export report to {filename}: {e}")
 
 def main():
     parser = argparse.ArgumentParser(description="AWS Sentinel: Automated Security Compliance Auditor")
@@ -204,6 +259,16 @@ def main():
         nargs="+",
         default=[],
         help="AWS regions to scan (e.g. us-east-1 us-west-2). Use 'all' to scan all active regions. Default: session region."
+    )
+    parser.add_argument(
+        "--format",
+        choices=["table", "json", "csv"],
+        default="table",
+        help="Output format (default: table)"
+    )
+    parser.add_argument(
+        "--output-file",
+        help="Path to save the findings report"
     )
     parser.add_argument(
         "--log-level",
@@ -240,6 +305,22 @@ def main():
 
     failed_count = sum(1 for f in all_findings if f["Status"] == "FAIL")
     logger.info(f"Audit completed. Total findings: {len(all_findings)}. Failures found: {failed_count}.")
+
+    if args.output_file:
+        export_findings(all_findings, args.output_file, args.format)
+    else:
+        if args.format == "table":
+            print_table(all_findings)
+        elif args.format == "json":
+            print(json.dumps(all_findings, indent=4))
+        elif args.format == "csv":
+            output = io.StringIO()
+            writer = csv.DictWriter(output, fieldnames=["Service", "Region", "ResourceID", "ResourceName", "Status", "Severity", "Finding"])
+            writer.writeheader()
+            for r in all_findings:
+                row = {k: r.get(k, '') for k in ["Service", "Region", "ResourceID", "ResourceName", "Status", "Severity", "Finding"]}
+                writer.writerow(row)
+            print(output.getvalue())
 
 if __name__ == "__main__":
     main()
