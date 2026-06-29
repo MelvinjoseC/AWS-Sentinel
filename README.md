@@ -89,6 +89,14 @@ python sentinel.py --remediate --dry-run
 ```bash
 python sentinel.py --remediate
 ```
+### Dispatch ChatOps Webhook Notifications (Slack & MS Teams)
+```bash
+# Send alerts to Slack on compliance failures
+python sentinel.py --slack-webhook "https://hooks.slack.com/services/YOUR_WORKSPACE/YOUR_CHANNEL/YOUR_TOKEN"
+
+# Send alerts to MS Teams on compliance failures
+python sentinel.py --teams-webhook "https://outlook.office.com/webhook/YOUR_WEBHOOK_TOKEN"
+```
 
 ---
 

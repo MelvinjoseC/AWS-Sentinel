@@ -455,6 +455,14 @@ def main():
         default="INFO",
         help="Set the logging level (default: INFO)"
     )
+    parser.add_argument(
+        "--slack-webhook",
+        help="Slack Webhook URL to send alert notifications for compliance failures"
+    )
+    parser.add_argument(
+        "--teams-webhook",
+        help="Microsoft Teams Webhook URL to send alert notifications for compliance failures"
+    )
     args = parser.parse_args()
 
     setup_logging(args.log_level)
@@ -504,6 +512,11 @@ def main():
                 row = {k: r.get(k, '') for k in fields}
                 writer.writerow(row)
             print(output.getvalue())
+
+    if args.slack_webhook:
+        send_slack_notification(args.slack_webhook, all_findings)
+    if args.teams_webhook:
+        send_teams_notification(args.teams_webhook, all_findings)
 
 if __name__ == "__main__":
     main()
