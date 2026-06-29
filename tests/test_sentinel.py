@@ -145,3 +145,50 @@ def test_audit_security_groups_and_remediation():
                 if ip.get('CidrIp') == '0.0.0.0/0':
                     port_22_exposed = True
     assert not port_22_exposed
+
+from unittest.mock import patch, MagicMock
+from sentinel import send_slack_notification, send_teams_notification
+
+def test_send_slack_notification_no_failures():
+    findings = [
+        {"Service": "S3", "Status": "PASS", "ResourceID": "b1", "Region": "global", "Finding": "Secure", "Severity": "Low", "RemediationStatus": "N/A"}
+    ]
+    with patch('urllib.request.urlopen') as mock_urlopen:
+        send_slack_notification("http://mock-webhook", findings)
+        mock_urlopen.assert_not_called()
+
+def test_send_slack_notification_with_failures():
+    findings = [
+        {"Service": "S3", "Status": "FAIL", "ResourceID": "b1", "Region": "global", "Finding": "Insecure", "Severity": "High", "RemediationStatus": "None"}
+    ]
+    mock_response = MagicMock()
+    mock_response.status = 200
+    with patch('urllib.request.urlopen', return_value=mock_response) as mock_urlopen:
+        send_slack_notification("http://mock-webhook", findings)
+        mock_urlopen.assert_called_once()
+        args, kwargs = mock_urlopen.call_args
+        req = args[0]
+        assert req.full_url == "http://mock-webhook"
+        assert req.get_header("Content-type") == "application/json"
+
+def test_send_teams_notification_no_failures():
+    findings = [
+        {"Service": "S3", "Status": "PASS", "ResourceID": "b1", "Region": "global", "Finding": "Secure", "Severity": "Low", "RemediationStatus": "N/A"}
+    ]
+    with patch('urllib.request.urlopen') as mock_urlopen:
+        send_teams_notification("http://mock-webhook", findings)
+        mock_urlopen.assert_not_called()
+
+def test_send_teams_notification_with_failures():
+    findings = [
+        {"Service": "S3", "Status": "FAIL", "ResourceID": "b1", "Region": "global", "Finding": "Insecure", "Severity": "High", "RemediationStatus": "None"}
+    ]
+    mock_response = MagicMock()
+    mock_response.status = 200
+    with patch('urllib.request.urlopen', return_value=mock_response) as mock_urlopen:
+        send_teams_notification("http://mock-webhook", findings)
+        mock_urlopen.assert_called_once()
+        args, kwargs = mock_urlopen.call_args
+        req = args[0]
+        assert req.full_url == "http://mock-webhook"
+        assert req.get_header("Content-type") == "application/json"
