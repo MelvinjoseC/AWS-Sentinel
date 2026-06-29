@@ -1,0 +1,21 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Virtual Environments
+venv/
+.venv/
+env/
+ENV/
+
+# Testing / Coverage
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Local reports and outputs
+*.json
+*.csv
+!pyproject.toml
