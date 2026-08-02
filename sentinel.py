@@ -176,6 +176,7 @@ class AWSSentinelAuditor:
 
             # 2. Server-side Encryption Check
             if self.config.get('s3', {}).get('check_encryption', True):
+                enc_remediation_status = "N/A"
                 try:
                     self.s3_client.get_bucket_encryption(Bucket=name)
                     logger.info(f"✅ S3 Bucket '{name}': Secure (Default Encryption Enabled)")
@@ -187,12 +188,39 @@ class AWSSentinelAuditor:
                         "Status": "PASS",
                         "Finding": "Default encryption is enabled",
                         "Severity": "Low",
-                        "RemediationStatus": "N/A"
+                        "RemediationStatus": enc_remediation_status
                     })
                 except ClientError as e:
                     if e.response['Error']['Code'] == 'ServerSideEncryptionConfigurationNotFoundError':
                         logger.warning(f"❌ S3 Bucket '{name}': WARNING - Default Encryption NOT Enabled!")
-                        enc_remediation_status = "None (Remediation not requested)"
+                        
+                        if remediate:
+                            if self.dry_run:
+                                logger.info(f"[DRY-RUN] Would enable default AES256 encryption for S3 bucket '{name}'")
+                                enc_remediation_status = "Dry-Run: Enable AES256 Encryption"
+                            else:
+                                try:
+                                    logger.info(f"Remediating S3 bucket '{name}': Enabling default AES256 encryption...")
+                                    self.s3_client.put_bucket_encryption(
+                                        Bucket=name,
+                                        ServerSideEncryptionConfiguration={
+                                            'Rules': [
+                                                {
+                                                    'ApplyServerSideEncryptionByDefault': {
+                                                        'SSEAlgorithm': 'AES256'
+                                                    }
+                                                }
+                                            ]
+                                        }
+                                    )
+                                    logger.info(f"✅ S3 Bucket '{name}': Default Encryption Enabled")
+                                    enc_remediation_status = "Remediated"
+                                except ClientError as re:
+                                    logger.error(f"Failed to enable encryption for S3 bucket '{name}': {re}")
+                                    enc_remediation_status = f"Remediation Failed: {re.response['Error']['Message']}"
+                        else:
+                            enc_remediation_status = "None (Remediation not requested)"
+
                         findings.append({
                             "Service": "S3",
                             "Region": "global",
