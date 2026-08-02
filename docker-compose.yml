@@ -1,0 +1,18 @@
+version: '3.8'
+
+services:
+  auditor:
+    build: .
+    volumes:
+      - ~/.aws:/root/.aws:ro
+      - .:/app
+    environment:
+      - AWS_PROFILE=${AWS_PROFILE:-default}
+    command: ["--config", "config.yaml"]
+
+  tester:
+    build: .
+    volumes:
+      - .:/app
+    command: ["-m", "pytest", "-v"]
+    entrypoint: ["python"]
