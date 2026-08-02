@@ -62,6 +62,76 @@ def test_audit_s3_remediation():
     assert pab['PublicAccessBlockConfiguration']['BlockPublicAcls'] is True
 
 @mock_aws
+def test_audit_s3_encryption_and_remediation():
+    s3 = boto3.client('s3', region_name='us-east-1')
+    
+    s3.create_bucket(Bucket='no-encryption-bucket')
+    s3.create_bucket(Bucket='encrypted-bucket')
+    s3.put_bucket_encryption(
+        Bucket='encrypted-bucket',
+        ServerSideEncryptionConfiguration={
+            'Rules': [
+                {
+                    'ApplyServerSideEncryptionByDefault': {
+                        'SSEAlgorithm': 'AES256'
+                    }
+                }
+            ]
+        }
+    )
+    
+    auditor = AWSSentinelAuditor()
+    auditor.config['s3']['check_versioning'] = False
+    
+    findings = auditor.audit_s3(remediate=False)
+    enc_findings = [f for f in findings if "encryption" in f['Finding'].lower()]
+    assert len(enc_findings) == 2
+    
+    no_enc_finding = next(f for f in enc_findings if f['ResourceID'] == 'no-encryption-bucket')
+    assert no_enc_finding['Status'] == 'FAIL'
+    
+    enc_finding = next(f for f in enc_findings if f['ResourceID'] == 'encrypted-bucket')
+    assert enc_finding['Status'] == 'PASS'
+    
+    findings_rem = auditor.audit_s3(remediate=True)
+    no_enc_finding_rem = next(f for f in findings_rem if f['ResourceID'] == 'no-encryption-bucket' and "encryption" in f['Finding'].lower())
+    assert no_enc_finding_rem['RemediationStatus'] == 'Remediated'
+    
+    enc_config = s3.get_bucket_encryption(Bucket='no-encryption-bucket')
+    assert enc_config['ServerSideEncryptionConfiguration']['Rules'][0]['ApplyServerSideEncryptionByDefault']['SSEAlgorithm'] == 'AES256'
+
+@mock_aws
+def test_audit_s3_versioning_and_remediation():
+    s3 = boto3.client('s3', region_name='us-east-1')
+    
+    s3.create_bucket(Bucket='no-versioning-bucket')
+    s3.create_bucket(Bucket='versioned-bucket')
+    s3.put_bucket_versioning(
+        Bucket='versioned-bucket',
+        VersioningConfiguration={'Status': 'Enabled'}
+    )
+    
+    auditor = AWSSentinelAuditor()
+    auditor.config['s3']['check_encryption'] = False
+    
+    findings = auditor.audit_s3(remediate=False)
+    ver_findings = [f for f in findings if "versioning" in f['Finding'].lower()]
+    assert len(ver_findings) == 2
+    
+    no_ver_finding = next(f for f in ver_findings if f['ResourceID'] == 'no-versioning-bucket')
+    assert no_ver_finding['Status'] == 'FAIL'
+    
+    ver_finding = next(f for f in ver_findings if f['ResourceID'] == 'versioned-bucket')
+    assert ver_finding['Status'] == 'PASS'
+    
+    findings_rem = auditor.audit_s3(remediate=True)
+    no_ver_finding_rem = next(f for f in findings_rem if f['ResourceID'] == 'no-versioning-bucket' and "versioning" in f['Finding'].lower())
+    assert no_ver_finding_rem['RemediationStatus'] == 'Remediated'
+    
+    ver_status = s3.get_bucket_versioning(Bucket='no-versioning-bucket')
+    assert ver_status['Status'] == 'Enabled'
+
+@mock_aws
 def test_audit_iam():
     iam = boto3.client('iam')
 
