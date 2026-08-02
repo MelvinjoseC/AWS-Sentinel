@@ -15,10 +15,34 @@ import boto3
 from botocore.exceptions import ClientError, ProfileNotFound
 
 
+class JSONFormatter(logging.Formatter):
+    def format(self, record):
+        log_entry = {
+            "timestamp": self.formatTime(record, self.datefmt),
+            "logger": record.name,
+            "level": record.levelname,
+            "message": record.getMessage()
+        }
+        if record.exc_info:
+            log_entry["exception"] = self.formatException(record.exc_info)
+        return json.dumps(log_entry)
+
 # Setup logging
-def setup_logging(level):
-    log_format = "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
-    logging.basicConfig(level=level, format=log_format)
+def setup_logging(level, json_format=False):
+    root_logger = logging.getLogger()
+    for handler in root_logger.handlers[:]:
+        root_logger.removeHandler(handler)
+        
+    handler = logging.StreamHandler(sys.stdout)
+    if json_format:
+        formatter = JSONFormatter()
+    else:
+        formatter = logging.Formatter("%(asctime)s - %(name)s - %(levelname)s - %(message)s")
+        
+    handler.setFormatter(formatter)
+    root_logger.addHandler(handler)
+    root_logger.setLevel(level)
+
 
 logger = logging.getLogger("aws-sentinel")
 
@@ -815,9 +839,14 @@ def main():
         "--profile",
         help="AWS profile name to use for authentication"
     )
+    parser.add_argument(
+        "--json-logging",
+        action="store_true",
+        help="Output logs in structured JSON format"
+    )
     args = parser.parse_args()
 
-    setup_logging(args.log_level)
+    setup_logging(args.log_level, json_format=args.json_logging)
     logger.info("AWS Sentinel auditor initialized.")
 
     if args.dry_run and not args.remediate:
