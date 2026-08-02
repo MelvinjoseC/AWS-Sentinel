@@ -332,3 +332,92 @@ def test_send_teams_notification_with_failures():
         req = args[0]
         assert req.full_url == "http://mock-webhook"
         assert req.get_header("Content-type") == "application/json"
+
+@mock_aws
+def test_audit_security_groups_custom_ports():
+    ec2 = boto3.client('ec2', region_name='us-east-1')
+    vpc = ec2.create_vpc(CidrBlock='10.0.0.0/16')
+    vpc_id = vpc['Vpc']['VpcId']
+    
+    sg = ec2.create_security_group(
+        GroupName='custom-sg',
+        Description='Allow RDP and FTP',
+        VpcId=vpc_id
+    )
+    sg_id = sg['GroupId']
+    
+    ec2.authorize_security_group_ingress(
+        GroupId=sg_id,
+        IpPermissions=[
+            {
+                'IpProtocol': 'tcp',
+                'FromPort': 3389,
+                'ToPort': 3389,
+                'IpRanges': [{'CidrIp': '0.0.0.0/0'}]
+            },
+            {
+                'IpProtocol': 'tcp',
+                'FromPort': 21,
+                'ToPort': 21,
+                'IpRanges': [{'CidrIp': '0.0.0.0/0'}]
+            }
+        ]
+    )
+    
+    auditor = AWSSentinelAuditor()
+    auditor.config['ec2']['ports_to_check'] = [
+        {"port": 3389, "protocol": "tcp", "severity": "Critical"},
+        {"port": 21, "protocol": "tcp", "severity": "High"},
+        {"port": 80, "protocol": "tcp", "severity": "Medium"}
+    ]
+    
+    findings = auditor.audit_security_groups(regions=['us-east-1'], remediate=False)
+    custom_findings = [f for f in findings if f['ResourceID'] == sg_id]
+    
+    assert len(custom_findings) == 3
+    
+    rdp_finding = next(f for f in custom_findings if "3389" in f['Finding'])
+    assert rdp_finding['Status'] == 'FAIL'
+    assert rdp_finding['Severity'] == 'Critical'
+    
+    ftp_finding = next(f for f in custom_findings if "21" in f['Finding'])
+    assert ftp_finding['Status'] == 'FAIL'
+    assert ftp_finding['Severity'] == 'High'
+    
+    http_finding = next(f for f in custom_findings if "80" in f['Finding'])
+    assert http_finding['Status'] == 'PASS'
+
+def test_json_logging_formatter():
+    import io
+    import logging
+    import json
+    from sentinel import setup_logging, JSONFormatter
+    
+    log_capture = io.StringIO()
+    root_logger = logging.getLogger()
+    
+    old_level = root_logger.level
+    old_handlers = root_logger.handlers[:]
+    
+    for h in old_handlers:
+        root_logger.removeHandler(h)
+        
+    handler = logging.StreamHandler(log_capture)
+    handler.setFormatter(JSONFormatter())
+    root_logger.addHandler(handler)
+    root_logger.setLevel(logging.INFO)
+    
+    test_logger = logging.getLogger("test-json-logger")
+    test_logger.info("This is a test message")
+    
+    root_logger.removeHandler(handler)
+    for h in old_handlers:
+        root_logger.addHandler(h)
+    root_logger.setLevel(old_level)
+    
+    log_content = log_capture.getvalue().strip()
+    parsed = json.loads(log_content)
+    assert parsed['logger'] == 'test-json-logger'
+    assert parsed['level'] == 'INFO'
+    assert parsed['message'] == 'This is a test message'
+    assert 'timestamp' in parsed
