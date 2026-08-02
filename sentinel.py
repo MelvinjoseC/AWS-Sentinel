@@ -521,81 +521,96 @@ class AWSSentinelAuditor:
                 for sg in page.get('SecurityGroups', []):
                     group_id = sg['GroupId']
                     group_name = sg['GroupName']
-                    is_secure = True
-                    remediation_status = "N/A"
+                    failed_ports = set()
+
+                    ports_to_check = self.config.get('ec2', {}).get('ports_to_check', [
+                        {"port": 22, "protocol": "tcp", "severity": "Critical"}
+                    ])
 
                     for rule in sg.get('IpPermissions', []):
                         from_port = rule.get('FromPort')
                         to_port = rule.get('ToPort')
+                        ip_protocol = rule.get('IpProtocol')
 
-                        port_22_exposed = False
-                        if from_port is not None and to_port is not None:
-                            if from_port <= 22 <= to_port:
-                                port_22_exposed = True
-                        elif rule.get('IpProtocol') == '-1': # All protocols
-                            port_22_exposed = True
+                        for target in ports_to_check:
+                            target_port = target.get('port')
+                            target_proto = target.get('protocol', 'tcp')
+                            target_severity = target.get('severity', 'High')
 
-                        if port_22_exposed:
-                            for ip in rule.get('IpRanges', []):
-                                if ip.get('CidrIp') == '0.0.0.0/0':
-                                    logger.warning(f"❌ SG {group_name} ({group_id}) [{region}]: Port 22 is OPEN to everyone!")
-                                    is_secure = False
+                            port_exposed = False
+                            # Check if protocol matches or rule protocol is all ('-1')
+                            protocol_match = (ip_protocol == '-1') or (ip_protocol == target_proto)
+                            
+                            if protocol_match:
+                                if from_port is not None and to_port is not None:
+                                    if from_port <= target_port <= to_port:
+                                        port_exposed = True
+                                elif ip_protocol == '-1':
+                                    port_exposed = True
 
-                                    if remediate:
-                                        if self.dry_run:
-                                            logger.info(f"[DRY-RUN] Would revoke Port 22 open rule from '0.0.0.0/0' for SG {group_name} ({group_id})")
-                                            remediation_status = "Dry-Run: Revoke SSH open to public"
+                            if port_exposed:
+                                for ip in rule.get('IpRanges', []):
+                                    if ip.get('CidrIp') == '0.0.0.0/0':
+                                        logger.warning(f"❌ SG {group_name} ({group_id}) [{region}]: Port {target_port} ({target_proto}) is OPEN to everyone!")
+                                        failed_ports.add(target_port)
+
+                                        remediation_status = "N/A"
+                                        if remediate:
+                                            if self.dry_run:
+                                                logger.info(f"[DRY-RUN] Would revoke Port {target_port} open rule from '0.0.0.0/0' for SG {group_name} ({group_id})")
+                                                remediation_status = f"Dry-Run: Revoke Port {target_port} open to public"
+                                            else:
+                                                try:
+                                                    logger.info(f"Remediating SG {group_name} ({group_id}): Revoking Port {target_port} public ingress rule...")
+                                                    # Build exact rule to revoke
+                                                    rule_to_revoke = {
+                                                        'IpProtocol': rule.get('IpProtocol'),
+                                                        'FromPort': rule.get('FromPort'),
+                                                        'ToPort': rule.get('ToPort'),
+                                                        'IpRanges': [{'CidrIp': '0.0.0.0/0'}]
+                                                    }
+                                                    if from_port is None:
+                                                        del rule_to_revoke['FromPort']
+                                                    if to_port is None:
+                                                        del rule_to_revoke['ToPort']
+
+                                                    regional_ec2.revoke_security_group_ingress(
+                                                        GroupId=group_id,
+                                                        IpPermissions=[rule_to_revoke]
+                                                    )
+                                                    logger.info(f"✅ SG {group_name} ({group_id}): Successfully Remediated Port {target_port}")
+                                                    remediation_status = "Remediated"
+                                                except ClientError as re:
+                                                    logger.error(f"Failed to remediate SG {group_name} ({group_id}) for Port {target_port}: {re}")
+                                                    remediation_status = f"Remediation Failed: {re.response['Error']['Message']}"
                                         else:
-                                            try:
-                                                logger.info(f"Remediating SG {group_name} ({group_id}): Revoking Port 22 public ingress rule...")
-                                                # Build exact rule to revoke
-                                                rule_to_revoke = {
-                                                    'IpProtocol': rule.get('IpProtocol'),
-                                                    'FromPort': rule.get('FromPort'),
-                                                    'ToPort': rule.get('ToPort'),
-                                                    'IpRanges': [{'CidrIp': '0.0.0.0/0'}]
-                                                }
-                                                # Handle case where ports might be None for protocol '-1'
-                                                if from_port is None:
-                                                    del rule_to_revoke['FromPort']
-                                                if to_port is None:
-                                                    del rule_to_revoke['ToPort']
+                                            remediation_status = "None (Remediation not requested)"
 
-                                                regional_ec2.revoke_security_group_ingress(
-                                                    GroupId=group_id,
-                                                    IpPermissions=[rule_to_revoke]
-                                                )
-                                                logger.info(f"✅ SG {group_name} ({group_id}): Successfully Remediated")
-                                                remediation_status = "Remediated"
-                                            except ClientError as re:
-                                                logger.error(f"Failed to remediate SG {group_name} ({group_id}): {re}")
-                                                remediation_status = f"Remediation Failed: {re.response['Error']['Message']}"
-                                    else:
-                                        remediation_status = "None (Remediation not requested)"
+                                        findings.append({
+                                            "Service": "EC2",
+                                            "Region": region,
+                                            "ResourceID": group_id,
+                                            "ResourceName": group_name,
+                                            "Status": "FAIL",
+                                            "Finding": f"Port {target_port} ({target_proto.upper()}) is open to the public internet (0.0.0.0/0)",
+                                            "Severity": target_severity,
+                                            "RemediationStatus": remediation_status
+                                        })
 
-                                    findings.append({
-                                        "Service": "EC2",
-                                        "Region": region,
-                                        "ResourceID": group_id,
-                                        "ResourceName": group_name,
-                                        "Status": "FAIL",
-                                        "Finding": "Port 22 (SSH) is open to the public internet (0.0.0.0/0)",
-                                        "Severity": "Critical",
-                                        "RemediationStatus": remediation_status
-                                    })
-
-                    if is_secure:
-                        logger.debug(f"✅ SG {group_name} ({group_id}) [{region}]: Port 22 is not publicly open")
-                        findings.append({
-                            "Service": "EC2",
-                            "Region": region,
-                            "ResourceID": group_id,
-                            "ResourceName": group_name,
-                            "Status": "PASS",
-                            "Finding": "Port 22 (SSH) is restricted",
-                            "Severity": "Low",
-                            "RemediationStatus": remediation_status
-                        })
+                    for target in ports_to_check:
+                        target_port = target.get('port')
+                        target_proto = target.get('protocol', 'tcp')
+                        if target_port not in failed_ports:
+                            findings.append({
+                                "Service": "EC2",
+                                "Region": region,
+                                "ResourceID": group_id,
+                                "ResourceName": group_name,
+                                "Status": "PASS",
+                                "Finding": f"Port {target_port} ({target_proto.upper()}) is restricted",
+                                "Severity": "Low",
+                                "RemediationStatus": "N/A"
+                            })
         return findings
 
 def print_table(findings):

@@ -143,7 +143,7 @@ def test_audit_security_groups_and_remediation():
 
     insecure_finding = next(f for f in findings if f['ResourceID'] == sg_insecure_id)
     assert insecure_finding['Status'] == 'FAIL'
-    assert insecure_finding['RemediationStatus'] == 'Dry-Run: Revoke SSH open to public'
+    assert insecure_finding['RemediationStatus'] == 'Dry-Run: Revoke Port 22 open to public'
 
     # Audit and Remediate (actually revoke)
     auditor_real = AWSSentinelAuditor(dry_run=False)
