@@ -243,6 +243,49 @@ class AWSSentinelAuditor:
                             "Severity": "Medium",
                             "RemediationStatus": "N/A"
                         })
+
+            # 3. Versioning Check
+            if self.config.get('s3', {}).get('check_versioning', True):
+                try:
+                    versioning = self.s3_client.get_bucket_versioning(Bucket=name)
+                    status = versioning.get('Status', 'Disabled')
+                    if status == 'Enabled':
+                        logger.info(f"✅ S3 Bucket '{name}': Secure (Versioning Enabled)")
+                        findings.append({
+                            "Service": "S3",
+                            "Region": "global",
+                            "ResourceID": name,
+                            "ResourceName": name,
+                            "Status": "PASS",
+                            "Finding": "Bucket versioning is enabled",
+                            "Severity": "Low",
+                            "RemediationStatus": "N/A"
+                        })
+                    else:
+                        logger.warning(f"❌ S3 Bucket '{name}': WARNING - Versioning is {status.upper()}!")
+                        ver_remediation_status = "None (Remediation not requested)"
+                        findings.append({
+                            "Service": "S3",
+                            "Region": "global",
+                            "ResourceID": name,
+                            "ResourceName": name,
+                            "Status": "FAIL",
+                            "Finding": f"Bucket versioning is {status.lower()}",
+                            "Severity": "Medium",
+                            "RemediationStatus": ver_remediation_status
+                        })
+                except ClientError as e:
+                    logger.error(f"Error checking versioning for bucket '{name}': {e}")
+                    findings.append({
+                        "Service": "S3",
+                        "Region": "global",
+                        "ResourceID": name,
+                        "ResourceName": name,
+                        "Status": "ERROR",
+                        "Finding": f"Failed to retrieve versioning configuration: {e.response['Error']['Message']}",
+                        "Severity": "Medium",
+                        "RemediationStatus": "N/A"
+                    })
         return findings
 
     def audit_iam(self, remediate=False):
