@@ -78,17 +78,29 @@ def test_audit_iam():
         AuthenticationCode1='123456',
         AuthenticationCode2='789012'
     )
+    
+    # Setup compliant password policy
+    iam.update_account_password_policy(
+        MinimumPasswordLength=14,
+        RequireSymbols=True,
+        RequireNumbers=True,
+        RequireUppercaseCharacters=True,
+        RequireLowercaseCharacters=True
+    )
 
     auditor = AWSSentinelAuditor()
     findings = auditor.audit_iam(remediate=False)
 
-    assert len(findings) == 2
+    assert len(findings) == 3
 
     insecure_finding = next(f for f in findings if f['ResourceName'] == 'insecure-user')
     assert insecure_finding['Status'] == 'FAIL'
 
     secure_finding = next(f for f in findings if f['ResourceName'] == 'secure-user')
     assert secure_finding['Status'] == 'PASS'
+    
+    pwd_finding = next(f for f in findings if f['ResourceID'] == 'AccountPasswordPolicy')
+    assert pwd_finding['Status'] == 'PASS'
 
 @mock_aws
 def test_audit_security_groups_and_remediation():

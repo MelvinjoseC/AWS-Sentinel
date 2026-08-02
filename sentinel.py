@@ -415,6 +415,91 @@ class AWSSentinelAuditor:
                         "Severity": "Medium",
                         "RemediationStatus": "N/A"
                     })
+        findings.extend(self.audit_iam_password_policy())
+        return findings
+
+    def audit_iam_password_policy(self):
+        """Audits the account-wide IAM Password Policy against security baselines."""
+        logger.info("Auditing IAM Password Policy...")
+        policy_config = self.config.get('iam', {}).get('password_policy', {})
+        findings = []
+        
+        try:
+            policy = self.iam_client.get_account_password_policy().get('PasswordPolicy', {})
+            
+            # Map of config key to policy attribute and readable name
+            checks = {
+                'minimum_length': ('MinimumPasswordLength', 'Minimum Length'),
+                'require_symbols': ('RequireSymbols', 'Require Symbols'),
+                'require_numbers': ('RequireNumbers', 'Require Numbers'),
+                'require_uppercase': ('RequireUppercaseCharacters', 'Require Uppercase'),
+                'require_lowercase': ('RequireLowercaseCharacters', 'Require Lowercase')
+            }
+            
+            failures = []
+            for config_key, (policy_attr, name) in checks.items():
+                expected = policy_config.get(config_key)
+                if expected is None:
+                    continue
+                
+                actual = policy.get(policy_attr)
+                if config_key == 'minimum_length':
+                    if actual is None or actual < expected:
+                        failures.append(f"{name} (Expected: >= {expected}, Actual: {actual})")
+                else:
+                    if not actual:
+                        failures.append(f"{name} (Expected: {expected}, Actual: {actual})")
+            
+            if failures:
+                logger.warning(f"❌ IAM Password Policy is not compliant: {', '.join(failures)}!")
+                findings.append({
+                    "Service": "IAM",
+                    "Region": "global",
+                    "ResourceID": "AccountPasswordPolicy",
+                    "ResourceName": "Account Password Policy",
+                    "Status": "FAIL",
+                    "Finding": f"Password policy is non-compliant: {', '.join(failures)}",
+                    "Severity": "Medium",
+                    "RemediationStatus": "Manual Intervention Required"
+                })
+            else:
+                logger.info("✅ IAM Password Policy is compliant with security baseline settings.")
+                findings.append({
+                    "Service": "IAM",
+                    "Region": "global",
+                    "ResourceID": "AccountPasswordPolicy",
+                    "ResourceName": "Account Password Policy",
+                    "Status": "PASS",
+                    "Finding": "Password policy is compliant with baseline settings",
+                    "Severity": "Low",
+                    "RemediationStatus": "N/A"
+                })
+                
+        except ClientError as e:
+            if e.response['Error']['Code'] == 'NoSuchEntity':
+                logger.warning("❌ IAM Password Policy is NOT defined for this account!")
+                findings.append({
+                    "Service": "IAM",
+                    "Region": "global",
+                    "ResourceID": "AccountPasswordPolicy",
+                    "ResourceName": "Account Password Policy",
+                    "Status": "FAIL",
+                    "Finding": "No IAM password policy is defined for this AWS account",
+                    "Severity": "High",
+                    "RemediationStatus": "Manual Intervention Required"
+                })
+            else:
+                logger.error(f"Error retrieving IAM Password Policy: {e}")
+                findings.append({
+                    "Service": "IAM",
+                    "Region": "global",
+                    "ResourceID": "AccountPasswordPolicy",
+                    "ResourceName": "Account Password Policy",
+                    "Status": "ERROR",
+                    "Finding": f"Failed to retrieve password policy: {e.response['Error']['Message']}",
+                    "Severity": "Medium",
+                    "RemediationStatus": "N/A"
+                })
         return findings
 
     def audit_security_groups(self, regions, remediate=False):
