@@ -23,14 +23,24 @@ logger = logging.getLogger("aws-sentinel")
 
 class AWSSentinelAuditor:
     def __init__(self, session=None, dry_run=False, config_path=None):
+        from botocore.config import Config
         self.session = session or boto3.Session()
         self.dry_run = dry_run
         self.config = self._load_config(config_path)
-        self.s3_client = self.session.client('s3')
-        self.iam_client = self.session.client('iam')
+        
+        # Configure retry strategy with exponential backoff
+        self.botocore_config = Config(
+            retries={
+                'max_attempts': 5,
+                'mode': 'standard'
+            }
+        )
+        
+        self.s3_client = self.session.client('s3', config=self.botocore_config)
+        self.iam_client = self.session.client('iam', config=self.botocore_config)
         # EC2 client for default region to discover active regions
         default_region = self.session.region_name or 'us-east-1'
-        self.ec2_client = self.session.client('ec2', region_name=default_region)
+        self.ec2_client = self.session.client('ec2', region_name=default_region, config=self.botocore_config)
 
     def _load_config(self, config_path):
         default_config = {
@@ -229,7 +239,7 @@ class AWSSentinelAuditor:
         for region in regions:
             logger.info(f"Scanning EC2 Security Groups in region: {region}...")
             try:
-                regional_ec2 = self.session.client('ec2', region_name=region)
+                regional_ec2 = self.session.client('ec2', region_name=region, config=self.botocore_config)
                 paginator = regional_ec2.get_paginator('describe_security_groups')
                 pages = paginator.paginate()
             except ClientError as e:
