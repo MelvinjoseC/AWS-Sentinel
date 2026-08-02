@@ -905,5 +905,42 @@ def main():
     if args.teams_webhook:
         send_teams_notification(args.teams_webhook, all_findings)
 
+def lambda_handler(event, context):
+    """AWS Lambda entrypoint handler."""
+    import os
+    logger.info("AWS Sentinel auditor triggered via Lambda.")
+    dry_run = os.environ.get("DRY_RUN", "False").lower() in ["true", "1", "yes"]
+    slack_webhook = os.environ.get("SLACK_WEBHOOK")
+    teams_webhook = os.environ.get("TEAMS_WEBHOOK")
+    
+    config_file = os.environ.get("CONFIG_FILE", "config.yaml")
+    config_path = config_file if os.path.exists(config_file) else None
+    
+    auditor = AWSSentinelAuditor(dry_run=dry_run, config_path=config_path)
+    
+    services = ["s3", "iam", "ec2"]
+    scan_regions = auditor.get_active_regions()
+    
+    all_findings = []
+    all_findings.extend(auditor.audit_s3(remediate=True))
+    all_findings.extend(auditor.audit_iam(remediate=True))
+    all_findings.extend(auditor.audit_security_groups(scan_regions, remediate=True))
+    
+    failed_count = sum(1 for f in all_findings if f["Status"] == "FAIL")
+    logger.info(f"Lambda Audit completed. Total findings: {len(all_findings)}. Failures found: {failed_count}.")
+    
+    if slack_webhook:
+        send_slack_notification(slack_webhook, all_findings)
+    if teams_webhook:
+        send_teams_notification(teams_webhook, all_findings)
+        
+    return {
+        "statusCode": 200,
+        "body": json.dumps({
+            "total_findings": len(all_findings),
+            "failures": failed_count
+        })
+    }
+
 if __name__ == "__main__":
     main()
