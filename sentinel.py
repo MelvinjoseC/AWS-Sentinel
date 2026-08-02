@@ -263,7 +263,28 @@ class AWSSentinelAuditor:
                         })
                     else:
                         logger.warning(f"❌ S3 Bucket '{name}': WARNING - Versioning is {status.upper()}!")
-                        ver_remediation_status = "None (Remediation not requested)"
+                        
+                        if remediate:
+                            if self.dry_run:
+                                logger.info(f"[DRY-RUN] Would enable versioning for S3 bucket '{name}'")
+                                ver_remediation_status = "Dry-Run: Enable Versioning"
+                            else:
+                                try:
+                                    logger.info(f"Remediating S3 bucket '{name}': Enabling bucket versioning...")
+                                    self.s3_client.put_bucket_versioning(
+                                        Bucket=name,
+                                        VersioningConfiguration={
+                                            'Status': 'Enabled'
+                                        }
+                                    )
+                                    logger.info(f"✅ S3 Bucket '{name}': Versioning Enabled")
+                                    ver_remediation_status = "Remediated"
+                                except ClientError as re:
+                                    logger.error(f"Failed to enable versioning for S3 bucket '{name}': {re}")
+                                    ver_remediation_status = f"Remediation Failed: {re.response['Error']['Message']}"
+                        else:
+                            ver_remediation_status = "None (Remediation not requested)"
+
                         findings.append({
                             "Service": "S3",
                             "Region": "global",
