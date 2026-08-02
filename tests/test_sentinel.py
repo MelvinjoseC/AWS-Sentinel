@@ -173,6 +173,60 @@ def test_audit_iam():
     assert pwd_finding['Status'] == 'PASS'
 
 @mock_aws
+def test_audit_iam_access_key_age():
+    iam = boto3.client('iam')
+    username = 'key-test-user'
+    iam.create_user(UserName=username)
+    
+    key_response = iam.create_access_key(UserName=username)
+    key_id = key_response['AccessKey']['AccessKeyId']
+    
+    # Non-compliant key age
+    auditor = AWSSentinelAuditor()
+    auditor.config['iam']['max_access_key_age_days'] = -1
+    with patch.object(auditor, 'audit_iam_password_policy', return_value=[]):
+        findings = auditor.audit_iam(remediate=False)
+        key_findings = [f for f in findings if f['ResourceID'] == key_id]
+        assert len(key_findings) == 1
+        assert key_findings[0]['Status'] == 'FAIL'
+        assert "older than" in key_findings[0]['Finding'].lower()
+
+    # Compliant key age
+    auditor2 = AWSSentinelAuditor()
+    auditor2.config['iam']['max_access_key_age_days'] = 90
+    with patch.object(auditor2, 'audit_iam_password_policy', return_value=[]):
+        findings2 = auditor2.audit_iam(remediate=False)
+        key_findings2 = [f for f in findings2 if f['ResourceID'] == key_id]
+        assert len(key_findings2) == 1
+        assert key_findings2[0]['Status'] == 'PASS'
+
+@mock_aws
+def test_audit_iam_password_policy_non_compliant():
+    iam = boto3.client('iam')
+    
+    iam.update_account_password_policy(
+        MinimumPasswordLength=6,
+        RequireSymbols=False,
+        RequireNumbers=True,
+        RequireUppercaseCharacters=True,
+        RequireLowercaseCharacters=True
+    )
+    
+    auditor = AWSSentinelAuditor()
+    findings = auditor.audit_iam_password_policy()
+    assert len(findings) == 1
+    assert findings[0]['Status'] == 'FAIL'
+    assert "non-compliant" in findings[0]['Finding'].lower()
+
+@mock_aws
+def test_audit_iam_password_policy_missing():
+    auditor = AWSSentinelAuditor()
+    findings = auditor.audit_iam_password_policy()
+    assert len(findings) == 1
+    assert findings[0]['Status'] == 'FAIL'
+    assert "no iam password policy is defined" in findings[0]['Finding'].lower()
+
+@mock_aws
 def test_audit_security_groups_and_remediation():
     ec2 = boto3.client('ec2', region_name='us-east-1')
 
