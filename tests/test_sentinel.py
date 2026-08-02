@@ -27,6 +27,8 @@ def test_audit_s3_secure_and_insecure():
     )
 
     auditor = AWSSentinelAuditor()
+    auditor.config['s3']['check_encryption'] = False
+    auditor.config['s3']['check_versioning'] = False
     findings = auditor.audit_s3(remediate=False)
 
     # Assertions
@@ -47,6 +49,8 @@ def test_audit_s3_remediation():
 
     # Run audit with remediation
     auditor = AWSSentinelAuditor()
+    auditor.config['s3']['check_encryption'] = False
+    auditor.config['s3']['check_versioning'] = False
     findings = auditor.audit_s3(remediate=True)
 
     assert len(findings) == 1

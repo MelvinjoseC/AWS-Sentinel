@@ -104,6 +104,11 @@ class AWSSentinelAuditor:
 
         for bucket in buckets:
             name = bucket['Name']
+            if name in self.config.get('s3', {}).get('exclude_buckets', []):
+                logger.info(f"Skipping S3 Bucket '{name}' as per exclusion list.")
+                continue
+
+            # 1. Public Access Block Check
             remediation_status = "N/A"
             try:
                 self.s3_client.get_public_access_block(Bucket=name)
@@ -168,6 +173,48 @@ class AWSSentinelAuditor:
                         "Severity": "Medium",
                         "RemediationStatus": remediation_status
                     })
+
+            # 2. Server-side Encryption Check
+            if self.config.get('s3', {}).get('check_encryption', True):
+                try:
+                    self.s3_client.get_bucket_encryption(Bucket=name)
+                    logger.info(f"✅ S3 Bucket '{name}': Secure (Default Encryption Enabled)")
+                    findings.append({
+                        "Service": "S3",
+                        "Region": "global",
+                        "ResourceID": name,
+                        "ResourceName": name,
+                        "Status": "PASS",
+                        "Finding": "Default encryption is enabled",
+                        "Severity": "Low",
+                        "RemediationStatus": "N/A"
+                    })
+                except ClientError as e:
+                    if e.response['Error']['Code'] == 'ServerSideEncryptionConfigurationNotFoundError':
+                        logger.warning(f"❌ S3 Bucket '{name}': WARNING - Default Encryption NOT Enabled!")
+                        enc_remediation_status = "None (Remediation not requested)"
+                        findings.append({
+                            "Service": "S3",
+                            "Region": "global",
+                            "ResourceID": name,
+                            "ResourceName": name,
+                            "Status": "FAIL",
+                            "Finding": "Default encryption is not enabled",
+                            "Severity": "Medium",
+                            "RemediationStatus": enc_remediation_status
+                        })
+                    else:
+                        logger.error(f"Error checking encryption for bucket '{name}': {e}")
+                        findings.append({
+                            "Service": "S3",
+                            "Region": "global",
+                            "ResourceID": name,
+                            "ResourceName": name,
+                            "Status": "ERROR",
+                            "Finding": f"Failed to retrieve default encryption: {e.response['Error']['Message']}",
+                            "Severity": "Medium",
+                            "RemediationStatus": "N/A"
+                        })
         return findings
 
     def audit_iam(self, remediate=False):
