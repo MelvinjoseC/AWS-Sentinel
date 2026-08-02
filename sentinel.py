@@ -1,4 +1,5 @@
 import argparse
+import datetime
 import csv
 import io
 import json
@@ -367,6 +368,52 @@ class AWSSentinelAuditor:
                         "Finding": f"Failed to retrieve MFA devices: {e.response['Error']['Message']}",
                         "Severity": "Medium",
                         "RemediationStatus": remediation_status
+                    })
+
+                # 2. Access Key Age Check
+                max_age_days = self.config.get('iam', {}).get('max_access_key_age_days', 90)
+                try:
+                    keys = self.iam_client.list_access_keys(UserName=username).get('AccessKeyMetadata', [])
+                    now = datetime.datetime.now(datetime.timezone.utc)
+                    for key in keys:
+                        key_id = key['AccessKeyId']
+                        create_date = key['CreateDate']
+                        age_days = (now - create_date).days
+                        if age_days > max_age_days:
+                            logger.warning(f"❌ IAM User '{username}': Access Key '{key_id}' is {age_days} days old (Limit: {max_age_days} days)!")
+                            findings.append({
+                                "Service": "IAM",
+                                "Region": "global",
+                                "ResourceID": key_id,
+                                "ResourceName": username,
+                                "Status": "FAIL",
+                                "Finding": f"Access Key is older than {max_age_days} days ({age_days} days)",
+                                "Severity": "Medium",
+                                "RemediationStatus": "Manual Intervention Required"
+                            })
+                        else:
+                            logger.info(f"✅ IAM User '{username}': Access Key '{key_id}' is active and compliant ({age_days} days old)")
+                            findings.append({
+                                "Service": "IAM",
+                                "Region": "global",
+                                "ResourceID": key_id,
+                                "ResourceName": username,
+                                "Status": "PASS",
+                                "Finding": f"Access Key is active and compliant ({age_days} days old)",
+                                "Severity": "Low",
+                                "RemediationStatus": "N/A"
+                            })
+                except ClientError as e:
+                    logger.error(f"Error checking access keys for user '{username}': {e}")
+                    findings.append({
+                        "Service": "IAM",
+                        "Region": "global",
+                        "ResourceID": user['Arn'],
+                        "ResourceName": username,
+                        "Status": "ERROR",
+                        "Finding": f"Failed to retrieve access keys: {e.response['Error']['Message']}",
+                        "Severity": "Medium",
+                        "RemediationStatus": "N/A"
                     })
         return findings
 
