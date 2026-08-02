@@ -6,127 +6,161 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
 ## 📌 Project Overview
-**AWS Sentinel** is a production-grade cloud security compliance auditing and auto-remediation CLI tool. It scans AWS environments for critical misconfigurations that lead to data breaches and unauthorized access, specifically targeting the three most exploited cloud vulnerabilities:
-1. **S3 Bucket Leak Prevention:** Detects and auto-remediates buckets without 'Public Access Block' enabled.
-2. **IAM MFA Compliance:** Audits all IAM users (with pagination support) to ensure Multi-Factor Authentication is active.
-3. **Network Hardening (Port 22):** Scans EC2 Security Groups across multiple AWS regions to detect and revoke open SSH rules exposing Port 22 to `0.0.0.0/0`.
+**AWS Sentinel** is a production-grade, enterprise-ready cloud security compliance auditing and auto-remediation tool. It checks AWS environments against core security baselines and automatically repairs key vulnerabilities, protecting your infrastructure from leaks and unauthorized access.
+
+It scans the following key resources and configurations:
+1. **S3 Bucket Security:**
+   - Detects and remediates buckets without `Public Access Block` enabled.
+   - Detects and remediates buckets missing default `AES256/KMS` server-side encryption.
+   - Detects and remediates buckets missing default `Bucket Versioning` (critical for data backup and deletion protection).
+2. **IAM Credential Protection & Hygiene:**
+   - Audits all IAM users to ensure Multi-Factor Authentication (MFA) is active.
+   - Identifies active IAM user Access Keys older than 90 days (standard rotation requirement).
+   - Audits the account-wide IAM Password Policy against production-grade settings (length, numbers, uppercase/lowercase, symbols).
+3. **Network Ingress Protection (Security Groups):**
+   - Scans EC2 Security Groups across active regions for publicly open ports (`0.0.0.0/0`).
+   - Supports scanning and auto-revoking open rules for Port 22 (SSH), Port 3389 (RDP), Port 21 (FTP), and other custom ports.
 
 ---
 
 ## 🛠️ Features
 
 - **Multi-Region Capabilities:** Scan a single region, a custom list of regions, or scan all active AWS regions (`--regions all`).
-- **Pagination Support:** Built-in boto3 pagination handling for IAM users and EC2 Security Groups, making the tool enterprise-ready.
-- **Auto-Remediation with Dry-Run Safety:** Fix insecure resources automatically (`--remediate`). Use `--dry-run` to preview remediation actions before making any destructive changes.
-- **Structured Reporting:** Export findings to JSON or CSV formats, or print a formatted ASCII table directly to console or file (`--format` and `--output-file`).
-- **Production Logging:** Replaced raw `print` statements with standard, configurable python `logging`.
-- **CI/CD Integrated:** Packaged with automated unit tests (`pytest` and `moto`) and a GitHub Actions workflow for continuous integration.
+- **Flexible Declarative Configuration:** Control checks, exclude specific resources (e.g. S3 bucket exclusions), and custom port scans via `config.yaml`.
+- **Auto-Remediation with Dry-Run Safety:** Automatically repair insecure resources (`--remediate`). Use `--dry-run` to preview changes before making destructive edits.
+- **Structured Reporting:** Export audit findings to JSON, CSV, or formatted ASCII table to files or console.
+- **Enterprise-Grade Logging:** Supports standard human-readable logging and structured JSON logging (`--json-logging`) for ELK, Datadog, or Splunk ingestion.
+- **CI/CD Security Gates:** Includes built-in pytest suite, code linter (Ruff), security scan (Bandit), and dependency audit (pip-audit) integrated into GitHub Actions.
+- **Containerized Execution:** Ready to run inside Kubernetes CronJobs or CI runners using the included `Dockerfile` and `docker-compose.yml`.
+- **Infrastructure as Code (IaC):** Terraform module to deploy AWS Sentinel as a scheduled AWS Lambda function triggered daily via EventBridge.
 
 ---
 
-## 🚀 Installation & Setup
+## ⚙️ Configuration (`config.yaml`)
 
-1. **Clone the repository:**
-   ```bash
-   git clone https://github.com/MelvinjoseC/AWS-Sentinel.git
-   cd AWS-Sentinel
-   ```
+Control Sentinel auditing behavior using the declarative `config.yaml` file:
 
-2. **Set up a Virtual Environment & Install Dependencies:**
-   ```bash
-   python -m venv venv
-   # On Windows:
-   venv\Scripts\activate
-   # On macOS/Linux:
-   source venv/bin/activate
+```yaml
+# AWS Sentinel Compliance Configuration File
 
-   pip install -r requirements.txt
-   ```
+# Customize severity overrides for finding reporting
+severity_overrides:
+  "S3.Public Access Block is not enabled": "High"
+  "EC2.Port 22 (SSH) is open to the public internet (0.0.0.0/0)": "Critical"
+  "IAM.Multi-Factor Authentication (MFA) is disabled": "High"
 
-3. **Configure AWS Credentials:**
-   Ensure your local environment has active AWS credentials configured via the AWS CLI:
-   ```bash
-   aws configure
-   ```
+s3:
+  exclude_buckets:
+    - "my-safe-public-assets-bucket" # Buckets to exclude from audits
+  check_encryption: true
+  check_versioning: true
 
----
+iam:
+  max_access_key_age_days: 90
+  password_policy:
+    require_uppercase: true
+    require_lowercase: true
+    require_numbers: true
+    require_symbols: true
+    minimum_length: 14
 
-## 💻 CLI Usage
-
-Execute audits and view findings with flexible options.
-
-### Run a Standard Audit (Prints ASCII Table)
-```bash
-python sentinel.py
-```
-
-### Scan Specific Services and Regions
-```bash
-# Scan only S3 and EC2 Security Groups in us-east-1 and us-west-2
-python sentinel.py --services s3 ec2 --regions us-east-1 us-west-2
-```
-
-### Scan All Active Regions
-```bash
-python sentinel.py --services ec2 --regions all
-```
-
-### Export Findings to JSON or CSV Report
-```bash
-# Save to JSON
-python sentinel.py --format json --output-file audit-report.json
-
-# Save to CSV
-python sentinel.py --format csv --output-file audit-report.csv
-```
-
-### Run Remediation in Dry-Run Mode (Preview Fixes)
-```bash
-python sentinel.py --remediate --dry-run
-```
-
-### Execute Auto-Remediation (Apply Fixes)
-```bash
-python sentinel.py --remediate
-```
-### Dispatch ChatOps Webhook Notifications (Slack & MS Teams)
-```bash
-# Send alerts to Slack on compliance failures
-python sentinel.py --slack-webhook "https://hooks.slack.com/services/YOUR_WORKSPACE/YOUR_CHANNEL/YOUR_TOKEN"
-
-# Send alerts to MS Teams on compliance failures
-python sentinel.py --teams-webhook "https://outlook.office.com/webhook/YOUR_WEBHOOK_TOKEN"
+ec2:
+  ports_to_check:
+    - port: 22
+      protocol: "tcp"
+      severity: "Critical"
+    - port: 3389
+      protocol: "tcp"
+      severity: "Critical"
+    - port: 21
+      protocol: "tcp"
+      severity: "High"
 ```
 
 ---
 
-## 🧪 Development & Testing
+## 🚀 Deployment & Usage
 
-We use `pytest` and `moto` to mock AWS environments. This allows running the full test suite locally without requiring active AWS credentials or incurring charges.
+### 1. Local CLI Execution
 
-### Run Tests
 ```bash
+# Clone the repository
+git clone https://github.com/MelvinjoseC/AWS-Sentinel.git
+cd AWS-Sentinel
+
+# Setup virtual environment
+python -m venv venv
+source venv/bin/activate  # On Windows: venv\Scripts\activate
+
+# Install dependencies
+pip install -r requirements.txt
+
+# Run a standard audit scan using the configuration file
+python sentinel.py --config config.yaml
+
+# Run with custom profile and JSON logging
+python sentinel.py --config config.yaml --profile my-prod-profile --json-logging
+```
+
+### 2. Containerized Execution (Docker)
+
+```bash
+# Build the multi-stage minimal Docker image
+docker build -t aws-sentinel .
+
+# Run the auditor using your host AWS credentials
+docker run --rm -v ~/.aws:/root/.aws:ro aws-sentinel --config config.yaml
+
+# Run tests or run audit using Docker Compose
+docker-compose run auditor
+docker-compose run tester
+```
+
+### 3. Scheduled AWS Lambda Deployment (Terraform)
+
+Deploy AWS Sentinel as a serverless scheduled task that runs daily inside your AWS account and alerts you on compliance failures via webhooks:
+
+```bash
+cd terraform
+
+# Initialize and preview deployment
+terraform init
+terraform plan -var="slack_webhook_url=https://hooks.slack.com/services/..."
+
+# Apply configuration
+terraform apply -var="slack_webhook_url=https://hooks.slack.com/services/..."
+```
+
+---
+
+## 🛡️ Audit Rules & Remediation
+
+| Service | Check | Severity | Auto-Remediation Action |
+| --- | --- | --- | --- |
+| **S3** | Public Access Block | High | Applies standard public block configuration. |
+| **S3** | Server-Side Encryption | Medium | Enables default `AES256` encryption. |
+| **S3** | Bucket Versioning | Medium | Enables bucket versioning. |
+| **IAM** | MFA Compliance | High | *Manual Action.* Requires user manual configuration. |
+| **IAM** | Access Key Age | Medium | *Manual Action.* Prompts key rotation if age > 90 days. |
+| **IAM** | Password Policy | Medium | *Manual Action.* Highlights non-compliant configuration values. |
+| **EC2** | Open SG Ingress Rules | Critical/High | Revokes open `0.0.0.0/0` rule for the target port. |
+
+---
+
+## 🧪 Testing & Code Quality
+
+We use `pytest` and `moto` to run unit tests without incurring charges or requiring AWS credentials.
+
+```bash
+# Run test suite
 pytest -v
-```
 
-### Run Linting and Formatting
-```bash
-# Run Ruff lint check
+# Run linting
 ruff check .
 
-# Run Ruff code formatter check
-ruff format --check .
+# Run security static analysis
+bandit -r . -x ./tests,./venv
 ```
-
----
-
-## 🛡️ Remediation Details
-
-| Service | Risk | Auto-Remediation Action |
-| --- | --- | --- |
-| **S3** | Publicly accessible bucket configuration | Applies a strict `PublicAccessBlockConfiguration` to block all public ACLs and Policies. |
-| **EC2** | SSH (Port 22) open to `0.0.0.0/0` | Revokes the insecure ingress rule from the security group in that specific region. |
-| **IAM** | MFA disabled on user accounts | *Manual Action required.* Logs warning and marks status as `Manual Intervention Required`. |
 
 ---
 
