@@ -1,0 +1,41 @@
+# AWS Sentinel Compliance Configuration File
+
+# Global settings
+severity_overrides:
+  # Customize severities for specific audit findings
+  # Service.Finding: Severity
+  "S3.Public Access Block is not enabled": "High"
+  "EC2.Port 22 (SSH) is open to the public internet (0.0.0.0/0)": "Critical"
+  "IAM.Multi-Factor Authentication (MFA) is disabled": "High"
+
+s3:
+  # Buckets to exclude from auditing
+  exclude_buckets: []
+  # Enable default compliance checks
+  check_encryption: true
+  check_versioning: true
+
+iam:
+  # Maximum age of access keys in days (default: 90)
+  max_access_key_age_days: 90
+  # IAM Password Policy requirements
+  password_policy:
+    require_uppercase: true
+    require_lowercase: true
+    require_numbers: true
+    require_symbols: true
+    minimum_length: 14
+
+ec2:
+  # Additional ports to scan for public exposure (0.0.0.0/0)
+  # Default is just port 22. Here you can add 3389, 21, 23, etc.
+  ports_to_check:
+    - port: 22
+      protocol: "tcp"
+      severity: "Critical"
+    - port: 3389
+      protocol: "tcp"
+      severity: "Critical"
+    - port: 21
+      protocol: "tcp"
+      severity: "High"

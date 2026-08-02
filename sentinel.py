@@ -5,6 +5,10 @@ import json
 import logging
 import sys
 import urllib.request
+try:
+    import yaml
+except ImportError:
+    yaml = None
 
 import boto3
 from botocore.exceptions import ClientError
@@ -18,14 +22,56 @@ def setup_logging(level):
 logger = logging.getLogger("aws-sentinel")
 
 class AWSSentinelAuditor:
-    def __init__(self, session=None, dry_run=False):
+    def __init__(self, session=None, dry_run=False, config_path=None):
         self.session = session or boto3.Session()
         self.dry_run = dry_run
+        self.config = self._load_config(config_path)
         self.s3_client = self.session.client('s3')
         self.iam_client = self.session.client('iam')
         # EC2 client for default region to discover active regions
         default_region = self.session.region_name or 'us-east-1'
         self.ec2_client = self.session.client('ec2', region_name=default_region)
+
+    def _load_config(self, config_path):
+        default_config = {
+            "severity_overrides": {},
+            "s3": {"exclude_buckets": [], "check_encryption": True, "check_versioning": True},
+            "iam": {
+                "max_access_key_age_days": 90,
+                "password_policy": {
+                    "require_uppercase": True,
+                    "require_lowercase": True,
+                    "require_numbers": True,
+                    "require_symbols": True,
+                    "minimum_length": 14
+                }
+            },
+            "ec2": {
+                "ports_to_check": [
+                    {"port": 22, "protocol": "tcp", "severity": "Critical"}
+                ]
+            }
+        }
+        if not config_path:
+            return default_config
+
+        try:
+            with open(config_path, 'r') as f:
+                if yaml:
+                    loaded = yaml.safe_load(f) or {}
+                else:
+                    loaded = json.load(f) or {}
+                
+                # Merge loaded config with default_config structure
+                for key, val in loaded.items():
+                    if isinstance(val, dict) and key in default_config:
+                        default_config[key].update(val)
+                    else:
+                        default_config[key] = val
+                logger.info(f"Configuration loaded successfully from {config_path}")
+        except Exception as e:
+            logger.error(f"Failed to load configuration from {config_path}: {e}. Using defaults.")
+        return default_config
 
     def get_active_regions(self):
         """Retrieves a list of all active AWS regions."""
@@ -465,6 +511,10 @@ def main():
         "--teams-webhook",
         help="Microsoft Teams Webhook URL to send alert notifications for compliance failures"
     )
+    parser.add_argument(
+        "--config",
+        help="Path to YAML/JSON configuration file"
+    )
     args = parser.parse_args()
 
     setup_logging(args.log_level)
@@ -473,7 +523,7 @@ def main():
     if args.dry_run and not args.remediate:
         logger.warning("--dry-run specified without --remediate. It will have no effect on audit findings.")
 
-    auditor = AWSSentinelAuditor(dry_run=args.dry_run)
+    auditor = AWSSentinelAuditor(dry_run=args.dry_run, config_path=args.config)
 
     # Determine regions to scan
     scan_regions = []
