@@ -11,7 +11,7 @@ except ImportError:
     yaml = None
 
 import boto3
-from botocore.exceptions import ClientError
+from botocore.exceptions import ClientError, ProfileNotFound
 
 
 # Setup logging
@@ -515,6 +515,10 @@ def main():
         "--config",
         help="Path to YAML/JSON configuration file"
     )
+    parser.add_argument(
+        "--profile",
+        help="AWS profile name to use for authentication"
+    )
     args = parser.parse_args()
 
     setup_logging(args.log_level)
@@ -523,7 +527,13 @@ def main():
     if args.dry_run and not args.remediate:
         logger.warning("--dry-run specified without --remediate. It will have no effect on audit findings.")
 
-    auditor = AWSSentinelAuditor(dry_run=args.dry_run, config_path=args.config)
+    try:
+        session = boto3.Session(profile_name=args.profile) if args.profile else None
+    except ProfileNotFound as e:
+        logger.error(f"AWS Profile Error: {e}")
+        sys.exit(1)
+
+    auditor = AWSSentinelAuditor(session=session, dry_run=args.dry_run, config_path=args.config)
 
     # Determine regions to scan
     scan_regions = []
