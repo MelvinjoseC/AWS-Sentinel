@@ -23,3 +23,15 @@ variable "teams_webhook_url" {
   description = "MS Teams webhook URL for security compliance alerts"
   sensitive   = true
 }
+
+variable "assume_role_arn" {
+  type        = string
+  default     = ""
+  description = "IAM Role ARN to assume for scanning target AWS account (optional)"
+}
+
+variable "assume_role_session_name" {
+  type        = string
+  default     = "AWSSentinelAuditorSession"
+  description = "Session name when assuming the target IAM role"
+}

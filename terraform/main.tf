@@ -48,18 +48,36 @@ resource "aws_iam_policy" "lambda_policy" {
           "s3:PutEncryptionConfiguration",
           "s3:GetBucketVersioning",
           "s3:PutBucketVersioning",
-          
+
           # IAM permissions
           "iam:ListUsers",
           "iam:ListMFADevices",
           "iam:ListAccessKeys",
           "iam:GetAccountPasswordPolicy",
-          
-          # EC2 permissions
+          "iam:GetAccessKeyLastUsed",
+          "iam:UpdateAccessKey",
+
+          # EC2 & EBS permissions
           "ec2:DescribeRegions",
           "ec2:DescribeSecurityGroups",
           "ec2:RevokeSecurityGroupIngress",
-          
+          "ec2:GetEbsEncryptionByDefault",
+          "ec2:EnableEbsEncryptionByDefault",
+          "ec2:DescribeVolumes",
+
+          # KMS permissions
+          "kms:ListKeys",
+          "kms:DescribeKey",
+          "kms:GetKeyRotationStatus",
+          "kms:EnableKeyRotation",
+
+          # CloudTrail permissions
+          "cloudtrail:DescribeTrails",
+          "cloudtrail:GetTrailStatus",
+
+          # STS AssumeRole for multi-account auditing
+          "sts:AssumeRole",
+
           # CloudWatch Logs permissions
           "logs:CreateLogGroup",
           "logs:CreateLogStream",
@@ -89,8 +107,10 @@ resource "aws_lambda_function" "sentinel_lambda" {
 
   environment {
     variables = {
-      SLACK_WEBHOOK = var.slack_webhook_url
-      TEAMS_WEBHOOK = var.teams_webhook_url
+      SLACK_WEBHOOK            = var.slack_webhook_url
+      TEAMS_WEBHOOK            = var.teams_webhook_url
+      ASSUME_ROLE_ARN          = var.assume_role_arn
+      ASSUME_ROLE_SESSION_NAME = var.assume_role_session_name
     }
   }
 }
