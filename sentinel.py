@@ -713,6 +713,113 @@ class AWSSentinelAuditor:
                             })
         return findings
 
+    def audit_ebs(self, regions, remediate=False):
+        """Audits EBS configuration and volumes for encryption across specified regions."""
+        findings = []
+        logger.info(f"Starting EBS volume encryption audit for regions: {regions}...")
+
+        for region in regions:
+            logger.info(f"Scanning EBS in region: {region}...")
+            try:
+                regional_ec2 = self.session.client('ec2', region_name=region, config=self.botocore_config)
+            except ClientError as e:
+                logger.error(f"Failed to initialize EC2 client in region {region}: {e}")
+                continue
+
+            # 1. EBS Encryption by Default Check
+            ebs_remediation_status = "N/A"
+            try:
+                ebs_status = regional_ec2.get_ebs_encryption_by_default()
+                is_enabled = ebs_status.get('EbsEncryptionByDefault', False)
+                if is_enabled:
+                    logger.info(f"✅ EBS: Encryption by Default is ENABLED in {region}")
+                    findings.append({
+                        "Service": "EBS",
+                        "Region": region,
+                        "ResourceID": f"EbsEncryptionByDefault-{region}",
+                        "ResourceName": "EBS Encryption by Default",
+                        "Status": "PASS",
+                        "Finding": "EBS Encryption by Default is enabled in this region",
+                        "Severity": "Low",
+                        "RemediationStatus": ebs_remediation_status
+                    })
+                else:
+                    logger.warning(f"❌ EBS: Encryption by Default is DISABLED in {region}!")
+                    if remediate:
+                        if self.dry_run:
+                            logger.info(f"[DRY-RUN] Would enable EBS Encryption by Default in region {region}")
+                            ebs_remediation_status = "Dry-Run: Enable EBS Encryption by Default"
+                        else:
+                            try:
+                                logger.info(f"Remediating EBS in region {region}: Enabling Encryption by Default...")
+                                regional_ec2.enable_ebs_encryption_by_default()
+                                logger.info(f"✅ EBS: Encryption by Default enabled in {region}")
+                                ebs_remediation_status = "Remediated"
+                            except ClientError as re:
+                                logger.error(f"Failed to enable EBS Encryption by Default in region {region}: {re}")
+                                ebs_remediation_status = f"Remediation Failed: {re.response['Error']['Message']}"
+                    else:
+                        ebs_remediation_status = "None (Remediation not requested)"
+
+                    findings.append({
+                        "Service": "EBS",
+                        "Region": region,
+                        "ResourceID": f"EbsEncryptionByDefault-{region}",
+                        "ResourceName": "EBS Encryption by Default",
+                        "Status": "FAIL",
+                        "Finding": "EBS Encryption by Default is disabled in this region",
+                        "Severity": "Medium",
+                        "RemediationStatus": ebs_remediation_status
+                    })
+            except ClientError as e:
+                logger.error(f"Error checking EBS encryption by default in region {region}: {e}")
+                findings.append({
+                    "Service": "EBS",
+                    "Region": region,
+                    "ResourceID": f"EbsEncryptionByDefault-{region}",
+                    "ResourceName": "EBS Encryption by Default",
+                    "Status": "ERROR",
+                    "Finding": f"Failed to retrieve EBS encryption status: {e.response['Error']['Message']}",
+                    "Severity": "Medium",
+                    "RemediationStatus": "N/A"
+                })
+
+            # 2. Auditing Individual Volumes
+            try:
+                paginator = regional_ec2.get_paginator('describe_volumes')
+                pages = paginator.paginate()
+                for page in pages:
+                    for vol in page.get('Volumes', []):
+                        vol_id = vol['VolumeId']
+                        encrypted = vol.get('Encrypted', False)
+                        if encrypted:
+                            logger.info(f"✅ EBS Volume '{vol_id}' [{region}]: Secure (Encrypted)")
+                            findings.append({
+                                "Service": "EBS",
+                                "Region": region,
+                                "ResourceID": vol_id,
+                                "ResourceName": vol_id,
+                                "Status": "PASS",
+                                "Finding": "EBS Volume is encrypted",
+                                "Severity": "Low",
+                                "RemediationStatus": "N/A"
+                            })
+                        else:
+                            logger.warning(f"❌ EBS Volume '{vol_id}' [{region}]: WARNING - Volume is NOT encrypted!")
+                            findings.append({
+                                "Service": "EBS",
+                                "Region": region,
+                                "ResourceID": vol_id,
+                                "ResourceName": vol_id,
+                                "Status": "FAIL",
+                                "Finding": "EBS Volume is not encrypted",
+                                "Severity": "High",
+                                "RemediationStatus": "Manual Intervention Required"
+                            })
+            except ClientError as e:
+                logger.error(f"Error describing EBS volumes in region {region}: {e}")
+        return findings
+
 def print_table(findings):
     """Formats and prints findings as a text table."""
     if not findings:
@@ -863,8 +970,8 @@ def main():
     parser.add_argument(
         "--services",
         nargs="+",
-        choices=["s3", "iam", "ec2"],
-        default=["s3", "iam", "ec2"],
+        choices=["s3", "iam", "ec2", "ebs", "kms", "cloudtrail"],
+        default=["s3", "iam", "ec2", "ebs", "kms", "cloudtrail"],
         help="AWS services to audit (default: all)"
     )
     parser.add_argument(
@@ -938,7 +1045,7 @@ def main():
 
     # Determine regions to scan
     scan_regions = []
-    if "ec2" in args.services:
+    if any(s in args.services for s in ["ec2", "ebs", "kms"]):
         if not args.regions:
             session_region = auditor.session.region_name or 'us-east-1'
             scan_regions = [session_region]
@@ -955,6 +1062,8 @@ def main():
         all_findings.extend(auditor.audit_iam(remediate=args.remediate))
     if "ec2" in args.services:
         all_findings.extend(auditor.audit_security_groups(scan_regions, remediate=args.remediate))
+    if "ebs" in args.services:
+        all_findings.extend(auditor.audit_ebs(scan_regions, remediate=args.remediate))
 
     failed_count = sum(1 for f in all_findings if f["Status"] == "FAIL")
     logger.info(f"Audit completed. Total findings: {len(all_findings)}. Failures found: {failed_count}.")
@@ -1000,6 +1109,7 @@ def lambda_handler(event, context):
     all_findings.extend(auditor.audit_s3(remediate=True))
     all_findings.extend(auditor.audit_iam(remediate=True))
     all_findings.extend(auditor.audit_security_groups(scan_regions, remediate=True))
+    all_findings.extend(auditor.audit_ebs(scan_regions, remediate=True))
 
     failed_count = sum(1 for f in all_findings if f["Status"] == "FAIL")
     logger.info(f"Lambda Audit completed. Total findings: {len(all_findings)}. Failures found: {failed_count}.")
