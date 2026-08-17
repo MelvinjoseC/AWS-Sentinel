@@ -632,6 +632,50 @@ class AWSSentinelAuditor:
                         to_port = rule.get('ToPort')
                         ip_protocol = rule.get('IpProtocol')
 
+                        # 1. Check for "All Traffic" (-1 protocol) exposed to the public internet
+                        is_all_traffic_public = False
+                        if ip_protocol == '-1':
+                            for ip in rule.get('IpRanges', []):
+                                if ip.get('CidrIp') == '0.0.0.0/0':
+                                    is_all_traffic_public = True
+                            for ipv6 in rule.get('Ipv6Ranges', []):
+                                if ipv6.get('CidrIpv6') == '::/0':
+                                    is_all_traffic_public = True
+
+                        if is_all_traffic_public:
+                            logger.warning(f"❌ SG {group_name} ({group_id}) [{region}]: ALL TRAFFIC is open to the public internet!")
+                            all_traffic_rem_status = "N/A"
+                            if remediate:
+                                if self.dry_run:
+                                    logger.info(f"[DRY-RUN] Would revoke ALL TRAFFIC open rule for SG {group_name} ({group_id})")
+                                    all_traffic_rem_status = "Dry-Run: Revoke All Traffic open rule"
+                                else:
+                                    try:
+                                        logger.info(f"Remediating SG {group_name} ({group_id}): Revoking ALL TRAFFIC public ingress rule...")
+                                        regional_ec2.revoke_security_group_ingress(
+                                            GroupId=group_id,
+                                            IpPermissions=[rule]
+                                        )
+                                        logger.info(f"✅ SG {group_name} ({group_id}): Successfully Remediated All Traffic rule")
+                                        all_traffic_rem_status = "Remediated"
+                                    except ClientError as re:
+                                        logger.error(f"Failed to remediate SG {group_name} ({group_id}) for All Traffic: {re}")
+                                        all_traffic_rem_status = f"Remediation Failed: {re.response['Error']['Message']}"
+                            else:
+                                all_traffic_rem_status = "None (Remediation not requested)"
+
+                            findings.append({
+                                "Service": "EC2",
+                                "Region": region,
+                                "ResourceID": group_id,
+                                "ResourceName": group_name,
+                                "Status": "FAIL",
+                                "Finding": "Security Group allows all traffic/protocols from the public internet (0.0.0.0/0 or ::/0)",
+                                "Severity": "Critical",
+                                "RemediationStatus": all_traffic_rem_status
+                            })
+                            continue
+
                         for target in ports_to_check:
                             target_port = target.get('port')
                             target_proto = target.get('protocol', 'tcp')
@@ -649,53 +693,73 @@ class AWSSentinelAuditor:
                                     port_exposed = True
 
                             if port_exposed:
+                                is_public = False
                                 for ip in rule.get('IpRanges', []):
                                     if ip.get('CidrIp') == '0.0.0.0/0':
-                                        logger.warning(f"❌ SG {group_name} ({group_id}) [{region}]: Port {target_port} ({target_proto}) is OPEN to everyone!")
-                                        failed_ports.add(target_port)
+                                        is_public = True
+                                for ipv6 in rule.get('Ipv6Ranges', []):
+                                    if ipv6.get('CidrIpv6') == '::/0':
+                                        is_public = True
 
-                                        remediation_status = "N/A"
-                                        if remediate:
-                                            if self.dry_run:
-                                                logger.info(f"[DRY-RUN] Would revoke Port {target_port} open rule from '0.0.0.0/0' for SG {group_name} ({group_id})")
-                                                remediation_status = f"Dry-Run: Revoke Port {target_port} open to public"
-                                            else:
-                                                try:
-                                                    logger.info(f"Remediating SG {group_name} ({group_id}): Revoking Port {target_port} public ingress rule...")
-                                                    # Build exact rule to revoke
-                                                    rule_to_revoke = {
-                                                        'IpProtocol': rule.get('IpProtocol'),
-                                                        'FromPort': rule.get('FromPort'),
-                                                        'ToPort': rule.get('ToPort'),
-                                                        'IpRanges': [{'CidrIp': '0.0.0.0/0'}]
-                                                    }
-                                                    if from_port is None:
-                                                        del rule_to_revoke['FromPort']
-                                                    if to_port is None:
-                                                        del rule_to_revoke['ToPort']
+                                if is_public:
+                                    logger.warning(f"❌ SG {group_name} ({group_id}) [{region}]: Port {target_port} ({target_proto}) is OPEN to everyone!")
+                                    failed_ports.add(target_port)
 
-                                                    regional_ec2.revoke_security_group_ingress(
-                                                        GroupId=group_id,
-                                                        IpPermissions=[rule_to_revoke]
-                                                    )
-                                                    logger.info(f"✅ SG {group_name} ({group_id}): Successfully Remediated Port {target_port}")
-                                                    remediation_status = "Remediated"
-                                                except ClientError as re:
-                                                    logger.error(f"Failed to remediate SG {group_name} ({group_id}) for Port {target_port}: {re}")
-                                                    remediation_status = f"Remediation Failed: {re.response['Error']['Message']}"
+                                    remediation_status = "N/A"
+                                    if remediate:
+                                        if self.dry_run:
+                                            logger.info(f"[DRY-RUN] Would revoke Port {target_port} open rule for SG {group_name} ({group_id})")
+                                            remediation_status = f"Dry-Run: Revoke Port {target_port} open to public"
                                         else:
-                                            remediation_status = "None (Remediation not requested)"
+                                            try:
+                                                logger.info(f"Remediating SG {group_name} ({group_id}): Revoking Port {target_port} public ingress rule...")
+                                                # Build exact rule to revoke
+                                                rule_to_revoke = {
+                                                    'IpProtocol': rule.get('IpProtocol'),
+                                                    'FromPort': rule.get('FromPort'),
+                                                    'ToPort': rule.get('ToPort'),
+                                                }
+                                                if from_port is None:
+                                                    del rule_to_revoke['FromPort']
+                                                if to_port is None:
+                                                    del rule_to_revoke['ToPort']
 
-                                        findings.append({
-                                            "Service": "EC2",
-                                            "Region": region,
-                                            "ResourceID": group_id,
-                                            "ResourceName": group_name,
-                                            "Status": "FAIL",
-                                            "Finding": f"Port {target_port} ({target_proto.upper()}) is open to the public internet (0.0.0.0/0)",
-                                            "Severity": target_severity,
-                                            "RemediationStatus": remediation_status
-                                        })
+                                                ip_ranges = []
+                                                ipv6_ranges = []
+                                                for ip in rule.get('IpRanges', []):
+                                                    if ip.get('CidrIp') == '0.0.0.0/0':
+                                                        ip_ranges.append({'CidrIp': '0.0.0.0/0'})
+                                                for ipv6 in rule.get('Ipv6Ranges', []):
+                                                    if ipv6.get('CidrIpv6') == '::/0':
+                                                        ipv6_ranges.append({'CidrIpv6': '::/0'})
+
+                                                if ip_ranges:
+                                                    rule_to_revoke['IpRanges'] = ip_ranges
+                                                if ipv6_ranges:
+                                                    rule_to_revoke['Ipv6Ranges'] = ipv6_ranges
+
+                                                regional_ec2.revoke_security_group_ingress(
+                                                    GroupId=group_id,
+                                                    IpPermissions=[rule_to_revoke]
+                                                )
+                                                logger.info(f"✅ SG {group_name} ({group_id}): Successfully Remediated Port {target_port}")
+                                                remediation_status = "Remediated"
+                                            except ClientError as re:
+                                                logger.error(f"Failed to remediate SG {group_name} ({group_id}) for Port {target_port}: {re}")
+                                                remediation_status = f"Remediation Failed: {re.response['Error']['Message']}"
+                                    else:
+                                        remediation_status = "None (Remediation not requested)"
+
+                                    findings.append({
+                                        "Service": "EC2",
+                                        "Region": region,
+                                        "ResourceID": group_id,
+                                        "ResourceName": group_name,
+                                        "Status": "FAIL",
+                                        "Finding": f"Port {target_port} ({target_proto.upper()}) is open to the public internet (0.0.0.0/0 or ::/0)",
+                                        "Severity": target_severity,
+                                        "RemediationStatus": remediation_status
+                                    })
 
                     for target in ports_to_check:
                         target_port = target.get('port')
