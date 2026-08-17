@@ -16,8 +16,10 @@ s3:
   check_versioning: true
 
 iam:
-  # Maximum age of access keys in days (default: 90)
+  # Maximum age of active access keys in days (default: 90)
   max_access_key_age_days: 90
+  # Maximum allowed inactive/unused access key days (default: 90)
+  max_unused_access_key_days: 90
   # IAM Password Policy requirements
   password_policy:
     require_uppercase: true
