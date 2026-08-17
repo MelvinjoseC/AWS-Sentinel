@@ -186,7 +186,7 @@ def test_audit_iam_access_key_age():
     auditor.config['iam']['max_access_key_age_days'] = -1
     with patch.object(auditor, 'audit_iam_password_policy', return_value=[]):
         findings = auditor.audit_iam(remediate=False)
-        key_findings = [f for f in findings if f['ResourceID'] == key_id]
+        key_findings = [f for f in findings if f['ResourceID'] == key_id and "older than" in f['Finding'].lower()]
         assert len(key_findings) == 1
         assert key_findings[0]['Status'] == 'FAIL'
         assert "older than" in key_findings[0]['Finding'].lower()
@@ -196,9 +196,58 @@ def test_audit_iam_access_key_age():
     auditor2.config['iam']['max_access_key_age_days'] = 90
     with patch.object(auditor2, 'audit_iam_password_policy', return_value=[]):
         findings2 = auditor2.audit_iam(remediate=False)
-        key_findings2 = [f for f in findings2 if f['ResourceID'] == key_id]
+        key_findings2 = [f for f in findings2 if f['ResourceID'] == key_id and "active and compliant" in f['Finding'].lower()]
         assert len(key_findings2) == 1
         assert key_findings2[0]['Status'] == 'PASS'
+
+@mock_aws
+def test_audit_iam_unused_access_keys():
+    iam = boto3.client('iam')
+    username = 'unused-key-user'
+    iam.create_user(UserName=username)
+    key_response = iam.create_access_key(UserName=username)
+    key_id = key_response['AccessKey']['AccessKeyId']
+
+    # Test unused key trigger via age of key (never used)
+    auditor = AWSSentinelAuditor()
+    auditor.config['iam']['max_unused_access_key_days'] = -1
+    with patch.object(auditor, 'audit_iam_password_policy', return_value=[]):
+        findings = auditor.audit_iam(remediate=False)
+        unused_findings = [f for f in findings if f['ResourceID'] == key_id and "never been used" in f['Finding'].lower()]
+        assert len(unused_findings) == 1
+        assert unused_findings[0]['Status'] == 'FAIL'
+
+    # Compliant unused key trigger
+    auditor2 = AWSSentinelAuditor()
+    auditor2.config['iam']['max_unused_access_key_days'] = 90
+    with patch.object(auditor2, 'audit_iam_password_policy', return_value=[]):
+        findings2 = auditor2.audit_iam(remediate=False)
+        unused_findings2 = [f for f in findings2 if f['ResourceID'] == key_id and "usage is compliant" in f['Finding'].lower()]
+        assert len(unused_findings2) == 1
+        assert unused_findings2[0]['Status'] == 'PASS'
+
+@mock_aws
+def test_audit_iam_unused_access_keys_remediation():
+    iam = boto3.client('iam')
+    username = 'unused-remediate-user'
+    iam.create_user(UserName=username)
+    key_response = iam.create_access_key(UserName=username)
+    key_id = key_response['AccessKey']['AccessKeyId']
+
+    auditor = AWSSentinelAuditor()
+    auditor.config['iam']['max_unused_access_key_days'] = -1
+
+    with patch.object(auditor, 'audit_iam_password_policy', return_value=[]):
+        # Remediate = True
+        findings = auditor.audit_iam(remediate=True)
+        unused_finding = next(f for f in findings if f['ResourceID'] == key_id and "never been used" in f['Finding'].lower())
+        assert unused_finding['Status'] == 'FAIL'
+        assert unused_finding['RemediationStatus'] == 'Remediated (Deactivated)'
+
+        # Verify the key is now Inactive
+        keys = iam.list_access_keys(UserName=username)['AccessKeyMetadata']
+        key_metadata = next(k for k in keys if k['AccessKeyId'] == key_id)
+        assert key_metadata['Status'] == 'Inactive'
 
 @mock_aws
 def test_audit_iam_password_policy_non_compliant():
