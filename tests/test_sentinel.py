@@ -578,3 +578,43 @@ def test_audit_cloudtrail_compliance():
     assert len(findings) == 1
     assert findings[0]['Status'] == 'PASS'
     assert "compliant active multi-region" in findings[0]['Finding'].lower()
+
+@mock_aws
+def test_audit_security_groups_all_traffic():
+    ec2 = boto3.client('ec2', region_name='us-east-1')
+    vpc = ec2.create_vpc(CidrBlock='10.0.0.0/16')
+    vpc_id = vpc['Vpc']['VpcId']
+
+    # Security Group allowing all protocols from 0.0.0.0/0
+    sg = ec2.create_security_group(
+        GroupName='all-traffic-sg',
+        Description='Allow all traffic',
+        VpcId=vpc_id
+    )
+    sg_id = sg['GroupId']
+
+    ec2.authorize_security_group_ingress(
+        GroupId=sg_id,
+        IpPermissions=[
+            {
+                'IpProtocol': '-1',
+                'IpRanges': [{'CidrIp': '0.0.0.0/0'}]
+            }
+        ]
+    )
+
+    auditor = AWSSentinelAuditor(dry_run=False)
+    findings = auditor.audit_security_groups(regions=['us-east-1'], remediate=False)
+
+    all_traffic_finding = next(f for f in findings if f['ResourceID'] == sg_id and "allows all traffic" in f['Finding'].lower())
+    assert all_traffic_finding['Status'] == 'FAIL'
+    assert all_traffic_finding['Severity'] == 'Critical'
+
+    # Remediate to revoke
+    findings_rem = auditor.audit_security_groups(regions=['us-east-1'], remediate=True)
+    all_traffic_rem = next(f for f in findings_rem if f['ResourceID'] == sg_id and "allows all traffic" in f['Finding'].lower())
+    assert all_traffic_rem['RemediationStatus'] == 'Remediated'
+
+    # Verify rule is revoked in ec2
+    sg_details = ec2.describe_security_groups(GroupIds=[sg_id])['SecurityGroups'][0]
+    assert len(sg_details['IpPermissions']) == 0
