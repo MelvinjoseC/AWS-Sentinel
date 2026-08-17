@@ -1,11 +1,12 @@
 import argparse
-import datetime
 import csv
+import datetime
 import io
 import json
 import logging
 import sys
 import urllib.request
+
 try:
     import yaml
 except ImportError:
@@ -32,13 +33,13 @@ def setup_logging(level, json_format=False):
     root_logger = logging.getLogger()
     for handler in root_logger.handlers[:]:
         root_logger.removeHandler(handler)
-        
+
     handler = logging.StreamHandler(sys.stdout)
     if json_format:
         formatter = JSONFormatter()
     else:
         formatter = logging.Formatter("%(asctime)s - %(name)s - %(levelname)s - %(message)s")
-        
+
     handler.setFormatter(formatter)
     root_logger.addHandler(handler)
     root_logger.setLevel(level)
@@ -52,7 +53,7 @@ class AWSSentinelAuditor:
         self.session = session or boto3.Session()
         self.dry_run = dry_run
         self.config = self._load_config(config_path)
-        
+
         # Configure retry strategy with exponential backoff
         self.botocore_config = Config(
             retries={
@@ -60,7 +61,7 @@ class AWSSentinelAuditor:
                 'mode': 'standard'
             }
         )
-        
+
         self.s3_client = self.session.client('s3', config=self.botocore_config)
         self.iam_client = self.session.client('iam', config=self.botocore_config)
         # EC2 client for default region to discover active regions
@@ -96,7 +97,7 @@ class AWSSentinelAuditor:
                     loaded = yaml.safe_load(f) or {}
                 else:
                     loaded = json.load(f) or {}
-                
+
                 # Merge loaded config with default_config structure
                 for key, val in loaded.items():
                     if isinstance(val, dict) and key in default_config:
@@ -218,7 +219,7 @@ class AWSSentinelAuditor:
                 except ClientError as e:
                     if e.response['Error']['Code'] == 'ServerSideEncryptionConfigurationNotFoundError':
                         logger.warning(f"❌ S3 Bucket '{name}': WARNING - Default Encryption NOT Enabled!")
-                        
+
                         if remediate:
                             if self.dry_run:
                                 logger.info(f"[DRY-RUN] Would enable default AES256 encryption for S3 bucket '{name}'")
@@ -288,7 +289,7 @@ class AWSSentinelAuditor:
                         })
                     else:
                         logger.warning(f"❌ S3 Bucket '{name}': WARNING - Versioning is {status.upper()}!")
-                        
+
                         if remediate:
                             if self.dry_run:
                                 logger.info(f"[DRY-RUN] Would enable versioning for S3 bucket '{name}'")
@@ -427,6 +428,81 @@ class AWSSentinelAuditor:
                                 "Severity": "Low",
                                 "RemediationStatus": "N/A"
                             })
+
+                        # 3. Unused Access Key Check
+                        max_unused_days = self.config.get('iam', {}).get('max_unused_access_key_days', 90)
+                        unused_remediation_status = "N/A"
+                        try:
+                            last_used_resp = self.iam_client.get_access_key_last_used(AccessKeyId=key_id)
+                            last_used_info = last_used_resp.get('AccessKeyLastUsed', {})
+                            last_used_date = last_used_info.get('LastUsedDate')
+
+                            if last_used_date:
+                                unused_days = (now - last_used_date).days
+                                is_unused = unused_days > max_unused_days
+                                finding_msg = f"Access Key has not been used in {unused_days} days (Limit: {max_unused_days} days)"
+                            else:
+                                unused_days = age_days
+                                is_unused = unused_days > max_unused_days
+                                finding_msg = f"Access Key has never been used and is {unused_days} days old (Limit: {max_unused_days} days)"
+
+                            if is_unused:
+                                logger.warning(f"❌ IAM User '{username}': Access Key '{key_id}' is unused for {unused_days} days!")
+                                if remediate:
+                                    if self.dry_run:
+                                        logger.info(f"[DRY-RUN] Would deactivate unused Access Key '{key_id}' for user '{username}'")
+                                        unused_remediation_status = "Dry-Run: Deactivate Access Key"
+                                    else:
+                                        try:
+                                            logger.info(f"Remediating IAM User '{username}': Deactivating unused Access Key '{key_id}'...")
+                                            self.iam_client.update_access_key(
+                                                UserName=username,
+                                                AccessKeyId=key_id,
+                                                Status='Inactive'
+                                            )
+                                            logger.info(f"✅ IAM Access Key '{key_id}': Successfully Deactivated")
+                                            unused_remediation_status = "Remediated (Deactivated)"
+                                        except ClientError as re:
+                                            logger.error(f"Failed to deactivate Access Key '{key_id}': {re}")
+                                            unused_remediation_status = f"Remediation Failed: {re.response['Error']['Message']}"
+                                else:
+                                    unused_remediation_status = "None (Remediation not requested)"
+
+                                findings.append({
+                                    "Service": "IAM",
+                                    "Region": "global",
+                                    "ResourceID": key_id,
+                                    "ResourceName": username,
+                                    "Status": "FAIL",
+                                    "Finding": finding_msg,
+                                    "Severity": "Medium",
+                                    "RemediationStatus": unused_remediation_status
+                                })
+                            else:
+                                usage_str = f"last used {unused_days} days ago" if last_used_date else "never used"
+                                logger.info(f"✅ IAM User '{username}': Access Key '{key_id}' usage is compliant ({usage_str})")
+                                findings.append({
+                                    "Service": "IAM",
+                                    "Region": "global",
+                                    "ResourceID": key_id,
+                                    "ResourceName": username,
+                                    "Status": "PASS",
+                                    "Finding": f"Access Key usage is compliant ({usage_str})",
+                                    "Severity": "Low",
+                                    "RemediationStatus": "N/A"
+                                })
+                        except ClientError as e:
+                            logger.error(f"Error checking last used time for access key '{key_id}': {e}")
+                            findings.append({
+                                "Service": "IAM",
+                                "Region": "global",
+                                "ResourceID": key_id,
+                                "ResourceName": username,
+                                "Status": "ERROR",
+                                "Finding": f"Failed to check access key last used time: {e.response['Error']['Message']}",
+                                "Severity": "Medium",
+                                "RemediationStatus": "N/A"
+                            })
                 except ClientError as e:
                     logger.error(f"Error checking access keys for user '{username}': {e}")
                     findings.append({
@@ -447,10 +523,10 @@ class AWSSentinelAuditor:
         logger.info("Auditing IAM Password Policy...")
         policy_config = self.config.get('iam', {}).get('password_policy', {})
         findings = []
-        
+
         try:
             policy = self.iam_client.get_account_password_policy().get('PasswordPolicy', {})
-            
+
             # Map of config key to policy attribute and readable name
             checks = {
                 'minimum_length': ('MinimumPasswordLength', 'Minimum Length'),
@@ -459,13 +535,13 @@ class AWSSentinelAuditor:
                 'require_uppercase': ('RequireUppercaseCharacters', 'Require Uppercase'),
                 'require_lowercase': ('RequireLowercaseCharacters', 'Require Lowercase')
             }
-            
+
             failures = []
             for config_key, (policy_attr, name) in checks.items():
                 expected = policy_config.get(config_key)
                 if expected is None:
                     continue
-                
+
                 actual = policy.get(policy_attr)
                 if config_key == 'minimum_length':
                     if actual is None or actual < expected:
@@ -473,7 +549,7 @@ class AWSSentinelAuditor:
                 else:
                     if not actual:
                         failures.append(f"{name} (Expected: {expected}, Actual: {actual})")
-            
+
             if failures:
                 logger.warning(f"❌ IAM Password Policy is not compliant: {', '.join(failures)}!")
                 findings.append({
@@ -498,7 +574,7 @@ class AWSSentinelAuditor:
                     "Severity": "Low",
                     "RemediationStatus": "N/A"
                 })
-                
+
         except ClientError as e:
             if e.response['Error']['Code'] == 'NoSuchEntity':
                 logger.warning("❌ IAM Password Policy is NOT defined for this account!")
@@ -564,7 +640,7 @@ class AWSSentinelAuditor:
                             port_exposed = False
                             # Check if protocol matches or rule protocol is all ('-1')
                             protocol_match = (ip_protocol == '-1') or (ip_protocol == target_proto)
-                            
+
                             if protocol_match:
                                 if from_port is not None and to_port is not None:
                                     if from_port <= target_port <= to_port:
@@ -912,28 +988,27 @@ def lambda_handler(event, context):
     dry_run = os.environ.get("DRY_RUN", "False").lower() in ["true", "1", "yes"]
     slack_webhook = os.environ.get("SLACK_WEBHOOK")
     teams_webhook = os.environ.get("TEAMS_WEBHOOK")
-    
+
     config_file = os.environ.get("CONFIG_FILE", "config.yaml")
     config_path = config_file if os.path.exists(config_file) else None
-    
+
     auditor = AWSSentinelAuditor(dry_run=dry_run, config_path=config_path)
-    
-    services = ["s3", "iam", "ec2"]
+
     scan_regions = auditor.get_active_regions()
-    
+
     all_findings = []
     all_findings.extend(auditor.audit_s3(remediate=True))
     all_findings.extend(auditor.audit_iam(remediate=True))
     all_findings.extend(auditor.audit_security_groups(scan_regions, remediate=True))
-    
+
     failed_count = sum(1 for f in all_findings if f["Status"] == "FAIL")
     logger.info(f"Lambda Audit completed. Total findings: {len(all_findings)}. Failures found: {failed_count}.")
-    
+
     if slack_webhook:
         send_slack_notification(slack_webhook, all_findings)
     if teams_webhook:
         send_teams_notification(teams_webhook, all_findings)
-        
+
     return {
         "statusCode": 200,
         "body": json.dumps({
