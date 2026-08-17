@@ -64,7 +64,7 @@ def test_audit_s3_remediation():
 @mock_aws
 def test_audit_s3_encryption_and_remediation():
     s3 = boto3.client('s3', region_name='us-east-1')
-    
+
     s3.create_bucket(Bucket='no-encryption-bucket')
     s3.create_bucket(Bucket='encrypted-bucket')
     s3.put_bucket_encryption(
@@ -79,55 +79,55 @@ def test_audit_s3_encryption_and_remediation():
             ]
         }
     )
-    
+
     auditor = AWSSentinelAuditor()
     auditor.config['s3']['check_versioning'] = False
-    
+
     findings = auditor.audit_s3(remediate=False)
     enc_findings = [f for f in findings if "encryption" in f['Finding'].lower()]
     assert len(enc_findings) == 2
-    
+
     no_enc_finding = next(f for f in enc_findings if f['ResourceID'] == 'no-encryption-bucket')
     assert no_enc_finding['Status'] == 'FAIL'
-    
+
     enc_finding = next(f for f in enc_findings if f['ResourceID'] == 'encrypted-bucket')
     assert enc_finding['Status'] == 'PASS'
-    
+
     findings_rem = auditor.audit_s3(remediate=True)
     no_enc_finding_rem = next(f for f in findings_rem if f['ResourceID'] == 'no-encryption-bucket' and "encryption" in f['Finding'].lower())
     assert no_enc_finding_rem['RemediationStatus'] == 'Remediated'
-    
+
     enc_config = s3.get_bucket_encryption(Bucket='no-encryption-bucket')
     assert enc_config['ServerSideEncryptionConfiguration']['Rules'][0]['ApplyServerSideEncryptionByDefault']['SSEAlgorithm'] == 'AES256'
 
 @mock_aws
 def test_audit_s3_versioning_and_remediation():
     s3 = boto3.client('s3', region_name='us-east-1')
-    
+
     s3.create_bucket(Bucket='no-versioning-bucket')
     s3.create_bucket(Bucket='versioned-bucket')
     s3.put_bucket_versioning(
         Bucket='versioned-bucket',
         VersioningConfiguration={'Status': 'Enabled'}
     )
-    
+
     auditor = AWSSentinelAuditor()
     auditor.config['s3']['check_encryption'] = False
-    
+
     findings = auditor.audit_s3(remediate=False)
     ver_findings = [f for f in findings if "versioning" in f['Finding'].lower()]
     assert len(ver_findings) == 2
-    
+
     no_ver_finding = next(f for f in ver_findings if f['ResourceID'] == 'no-versioning-bucket')
     assert no_ver_finding['Status'] == 'FAIL'
-    
+
     ver_finding = next(f for f in ver_findings if f['ResourceID'] == 'versioned-bucket')
     assert ver_finding['Status'] == 'PASS'
-    
+
     findings_rem = auditor.audit_s3(remediate=True)
     no_ver_finding_rem = next(f for f in findings_rem if f['ResourceID'] == 'no-versioning-bucket' and "versioning" in f['Finding'].lower())
     assert no_ver_finding_rem['RemediationStatus'] == 'Remediated'
-    
+
     ver_status = s3.get_bucket_versioning(Bucket='no-versioning-bucket')
     assert ver_status['Status'] == 'Enabled'
 
@@ -148,7 +148,7 @@ def test_audit_iam():
         AuthenticationCode1='123456',
         AuthenticationCode2='789012'
     )
-    
+
     # Setup compliant password policy
     iam.update_account_password_policy(
         MinimumPasswordLength=14,
@@ -168,7 +168,7 @@ def test_audit_iam():
 
     secure_finding = next(f for f in findings if f['ResourceName'] == 'secure-user')
     assert secure_finding['Status'] == 'PASS'
-    
+
     pwd_finding = next(f for f in findings if f['ResourceID'] == 'AccountPasswordPolicy')
     assert pwd_finding['Status'] == 'PASS'
 
@@ -177,10 +177,10 @@ def test_audit_iam_access_key_age():
     iam = boto3.client('iam')
     username = 'key-test-user'
     iam.create_user(UserName=username)
-    
+
     key_response = iam.create_access_key(UserName=username)
     key_id = key_response['AccessKey']['AccessKeyId']
-    
+
     # Non-compliant key age
     auditor = AWSSentinelAuditor()
     auditor.config['iam']['max_access_key_age_days'] = -1
@@ -252,7 +252,7 @@ def test_audit_iam_unused_access_keys_remediation():
 @mock_aws
 def test_audit_iam_password_policy_non_compliant():
     iam = boto3.client('iam')
-    
+
     iam.update_account_password_policy(
         MinimumPasswordLength=6,
         RequireSymbols=False,
@@ -260,7 +260,7 @@ def test_audit_iam_password_policy_non_compliant():
         RequireUppercaseCharacters=True,
         RequireLowercaseCharacters=True
     )
-    
+
     auditor = AWSSentinelAuditor()
     findings = auditor.audit_iam_password_policy()
     assert len(findings) == 1
@@ -387,14 +387,14 @@ def test_audit_security_groups_custom_ports():
     ec2 = boto3.client('ec2', region_name='us-east-1')
     vpc = ec2.create_vpc(CidrBlock='10.0.0.0/16')
     vpc_id = vpc['Vpc']['VpcId']
-    
+
     sg = ec2.create_security_group(
         GroupName='custom-sg',
         Description='Allow RDP and FTP',
         VpcId=vpc_id
     )
     sg_id = sg['GroupId']
-    
+
     ec2.authorize_security_group_ingress(
         GroupId=sg_id,
         IpPermissions=[
@@ -412,58 +412,59 @@ def test_audit_security_groups_custom_ports():
             }
         ]
     )
-    
+
     auditor = AWSSentinelAuditor()
     auditor.config['ec2']['ports_to_check'] = [
         {"port": 3389, "protocol": "tcp", "severity": "Critical"},
         {"port": 21, "protocol": "tcp", "severity": "High"},
         {"port": 80, "protocol": "tcp", "severity": "Medium"}
     ]
-    
+
     findings = auditor.audit_security_groups(regions=['us-east-1'], remediate=False)
     custom_findings = [f for f in findings if f['ResourceID'] == sg_id]
-    
+
     assert len(custom_findings) == 3
-    
+
     rdp_finding = next(f for f in custom_findings if "3389" in f['Finding'])
     assert rdp_finding['Status'] == 'FAIL'
     assert rdp_finding['Severity'] == 'Critical'
-    
+
     ftp_finding = next(f for f in custom_findings if "21" in f['Finding'])
     assert ftp_finding['Status'] == 'FAIL'
     assert ftp_finding['Severity'] == 'High'
-    
+
     http_finding = next(f for f in custom_findings if "80" in f['Finding'])
     assert http_finding['Status'] == 'PASS'
 
 def test_json_logging_formatter():
     import io
-    import logging
     import json
-    from sentinel import setup_logging, JSONFormatter
-    
+    import logging
+
+    from sentinel import JSONFormatter
+
     log_capture = io.StringIO()
     root_logger = logging.getLogger()
-    
+
     old_level = root_logger.level
     old_handlers = root_logger.handlers[:]
-    
+
     for h in old_handlers:
         root_logger.removeHandler(h)
-        
+
     handler = logging.StreamHandler(log_capture)
     handler.setFormatter(JSONFormatter())
     root_logger.addHandler(handler)
     root_logger.setLevel(logging.INFO)
-    
+
     test_logger = logging.getLogger("test-json-logger")
     test_logger.info("This is a test message")
-    
+
     root_logger.removeHandler(handler)
     for h in old_handlers:
         root_logger.addHandler(h)
     root_logger.setLevel(old_level)
-    
+
     log_content = log_capture.getvalue().strip()
     parsed = json.loads(log_content)
     assert parsed['logger'] == 'test-json-logger'
