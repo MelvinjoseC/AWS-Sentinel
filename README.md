@@ -12,14 +12,23 @@ It scans the following key resources and configurations:
 1. **S3 Bucket Security:**
    - Detects and remediates buckets without `Public Access Block` enabled.
    - Detects and remediates buckets missing default `AES256/KMS` server-side encryption.
-   - Detects and remediates buckets missing default `Bucket Versioning` (critical for data backup and deletion protection).
+   - Detects and remediates buckets missing default `Bucket Versioning`.
 2. **IAM Credential Protection & Hygiene:**
    - Audits all IAM users to ensure Multi-Factor Authentication (MFA) is active.
-   - Identifies active IAM user Access Keys older than 90 days (standard rotation requirement).
-   - Audits the account-wide IAM Password Policy against production-grade settings (length, numbers, uppercase/lowercase, symbols).
+   - Identifies active IAM user Access Keys older than 90 days.
+   - Audits and deactivates unused IAM Access Keys (unused for > 90 days).
+   - Audits the account-wide IAM Password Policy against production-grade settings.
 3. **Network Ingress Protection (Security Groups):**
-   - Scans EC2 Security Groups across active regions for publicly open ports (`0.0.0.0/0`).
+   - Scans EC2 Security Groups for publicly open ports (`0.0.0.0/0` or `::/0`).
    - Supports scanning and auto-revoking open rules for Port 22 (SSH), Port 3389 (RDP), Port 21 (FTP), and other custom ports.
+   - Identifies and revokes rules exposing "All Traffic" (protocol `-1`) to the public internet.
+4. **KMS Key Rotation:**
+   - Audits KMS Customer Managed Keys (CMKs) to ensure key rotation is enabled. Auto-remediates by enabling rotation.
+5. **EBS Volume Encryption:**
+   - Checks if EBS Encryption by Default is enabled in all regions. Auto-remediates by enabling default encryption.
+   - Audits individual EBS volumes in all active regions to verify they are encrypted.
+6. **CloudTrail Auditing:**
+   - Verifies if at least one active, multi-region CloudTrail is configured and logging.
 
 ---
 
@@ -57,6 +66,7 @@ s3:
 
 iam:
   max_access_key_age_days: 90
+  max_unused_access_key_days: 90
   password_policy:
     require_uppercase: true
     require_lowercase: true
@@ -143,7 +153,13 @@ terraform apply -var="slack_webhook_url=https://hooks.slack.com/services/..."
 | **IAM** | MFA Compliance | High | *Manual Action.* Requires user manual configuration. |
 | **IAM** | Access Key Age | Medium | *Manual Action.* Prompts key rotation if age > 90 days. |
 | **IAM** | Password Policy | Medium | *Manual Action.* Highlights non-compliant configuration values. |
-| **EC2** | Open SG Ingress Rules | Critical/High | Revokes open `0.0.0.0/0` rule for the target port. |
+| **IAM** | Unused Access Keys | Medium | Deactivates access keys unused for > 90 days. |
+| **EC2** | Open SG Ingress Rules | Critical/High | Revokes open `0.0.0.0/0` or `::/0` rule for the target port. |
+| **EC2** | Open SG All Traffic | Critical | Revokes open rule exposing all protocols (protocol `-1`). |
+| **KMS** | CMK Key Rotation | Medium | Enables automatic rotation for customer managed keys. |
+| **EBS** | Default Encryption | Medium | Enables account-level default EBS volume encryption. |
+| **EBS** | Unencrypted Volumes | High | *Manual Action.* Prompts encryption for active volumes. |
+| **CloudTrail** | Active Logging Trail | High | *Manual Action.* Prompts creation of multi-region active trail. |
 
 ---
 
