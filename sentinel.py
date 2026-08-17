@@ -1095,40 +1095,52 @@ def export_findings(findings, filename, fmt):
         logger.error(f"Failed to export report to {filename}: {e}")
 
 def send_slack_notification(webhook_url, findings):
-    """Sends failed findings alert to Slack webhook."""
+    """Sends failed findings alert to Slack webhook with structured styling."""
     failed = [f for f in findings if f["Status"] == "FAIL"]
     if not failed:
         logger.info("No compliance failures detected. Skipping Slack notification.")
         return
 
-    text = f"🚨 *AWS Sentinel Security Alert*\nAudit completed with *{len(failed)}* compliance failures."
-    blocks = [
+    title = f"🚨 *AWS Sentinel Security Alert* | *{len(failed)}* Compliance Failures"
+
+    attachment_blocks = [
         {
             "type": "section",
-            "text": {"type": "mrkdwn", "text": text}
+            "text": {
+                "type": "mrkdwn",
+                "text": f"{title}\nScanned at {datetime.datetime.now(datetime.timezone.utc).strftime('%Y-%m-%d %H:%M:%S UTC')}"
+            }
         },
         {"type": "divider"}
     ]
 
     for f in failed[:10]:
+        severity_emoji = "🔴" if f.get('Severity') in ["Critical", "High"] else "🟡"
         item_text = (
-            f"• *{f['Service']}* | {f['Region']} | *{f['Severity']}*\n"
-            f"  Resource: `{f['ResourceID']}`\n"
-            f"  Finding: {f['Finding']}\n"
-            f"  Remediation: `{f['RemediationStatus']}`"
+            f"{severity_emoji} *[{f.get('Severity', 'MEDIUM').upper()}] {f.get('Service')} Compliance Failure*\n"
+            f"  • *Resource:* `{f.get('ResourceID')}` ({f.get('Region', 'global')})\n"
+            f"  • *Finding:* {f.get('Finding')}\n"
+            f"  • *Remediation:* `{f.get('RemediationStatus', 'N/A')}`"
         )
-        blocks.append({
+        attachment_blocks.append({
             "type": "section",
             "text": {"type": "mrkdwn", "text": item_text}
         })
 
     if len(failed) > 10:
-        blocks.append({
+        attachment_blocks.append({
             "type": "section",
-            "text": {"type": "mrkdwn", "text": f"...and {len(failed) - 10} more findings."}
+            "text": {"type": "mrkdwn", "text": f"_*...and {len(failed) - 10} more findings. Download full report for details.*_"}
         })
 
-    payload = {"blocks": blocks}
+    payload = {
+        "attachments": [
+            {
+                "color": "#D70000",
+                "blocks": attachment_blocks
+            }
+        ]
+    }
 
     try:
         req = urllib.request.Request(
@@ -1145,7 +1157,7 @@ def send_slack_notification(webhook_url, findings):
         logger.error(f"Error sending Slack notification: {e}")
 
 def send_teams_notification(webhook_url, findings):
-    """Sends failed findings alert to Microsoft Teams webhook."""
+    """Sends failed findings alert to Microsoft Teams webhook with structured styling."""
     failed = [f for f in findings if f["Status"] == "FAIL"]
     if not failed:
         logger.info("No compliance failures detected. Skipping MS Teams notification.")
@@ -1161,18 +1173,39 @@ def send_teams_notification(webhook_url, findings):
         "sections": []
     }
 
-    section = {
-        "activityTitle": "Critical & High Severity Findings",
-        "facts": []
-    }
+    # Group findings by severity
+    by_severity = {"Critical": [], "High": [], "Medium": [], "Low": []}
+    for f in failed:
+        sev = f.get("Severity", "Medium")
+        if sev in by_severity:
+            by_severity[sev].append(f)
+        else:
+            by_severity["Medium"].append(f)
 
-    for f in failed[:15]:
-        section["facts"].append({
-            "name": f"{f['Service']} ({f['Region']}) - {f['Severity']}",
-            "value": f"**Resource:** `{f['ResourceID']}`\n**Finding:** {f['Finding']}\n**Remediation:** {f['RemediationStatus']}"
-        })
+    for sev in ["Critical", "High", "Medium", "Low"]:
+        sev_findings = by_severity[sev]
+        if not sev_findings:
+            continue
 
-    payload["sections"].append(section)
+        emoji = "🔴" if sev in ["Critical", "High"] else "🟡"
+        section = {
+            "activityTitle": f"{emoji} {sev} Severity Findings ({len(sev_findings)})",
+            "facts": []
+        }
+
+        for f in sev_findings[:10]:
+            section["facts"].append({
+                "name": f"{f.get('Service')} ({f.get('Region', 'global')})",
+                "value": f"**Resource:** `{f.get('ResourceID')}`\n\n**Finding:** {f.get('Finding')}\n\n**Remediation:** {f.get('RemediationStatus', 'N/A')}"
+            })
+
+        if len(sev_findings) > 10:
+            section["facts"].append({
+                "name": "Truncated",
+                "value": f"...and {len(sev_findings) - 10} more {sev} findings."
+            })
+
+        payload["sections"].append(section)
 
     try:
         req = urllib.request.Request(
