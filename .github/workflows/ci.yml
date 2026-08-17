@@ -49,3 +49,11 @@ jobs:
       run: |
         pip install pip-audit
         pip-audit
+
+    - name: Setup Terraform
+      uses: hashicorp/setup-terraform@v3
+      with:
+        terraform_version: "1.7.0"
+
+    - name: Verify Terraform formatting
+      run: terraform fmt -check -recursive terraform/
