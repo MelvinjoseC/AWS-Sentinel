@@ -820,6 +820,77 @@ class AWSSentinelAuditor:
                 logger.error(f"Error describing EBS volumes in region {region}: {e}")
         return findings
 
+    def audit_kms(self, regions, remediate=False):
+        """Audits KMS Customer Managed Keys (CMKs) in specified regions for key rotation status."""
+        findings = []
+        logger.info(f"Starting KMS Customer Managed Keys rotation audit for regions: {regions}...")
+
+        for region in regions:
+            logger.info(f"Scanning KMS CMKs in region: {region}...")
+            try:
+                regional_kms = self.session.client('kms', region_name=region, config=self.botocore_config)
+                # List KMS keys in the region
+                paginator = regional_kms.get_paginator('list_keys')
+                pages = paginator.paginate()
+            except ClientError as e:
+                logger.error(f"Failed to scan KMS keys in region {region}: {e}")
+                continue
+
+            for page in pages:
+                for key_entry in page.get('Keys', []):
+                    key_id = key_entry['KeyId']
+                    try:
+                        key_details = regional_kms.describe_key(KeyId=key_id).get('KeyMetadata', {})
+                        # Only audit Customer Managed Keys (CMKs) that are enabled
+                        if key_details.get('KeyManager') == 'CUSTOMER' and key_details.get('Enabled', False):
+                            rotation_status = regional_kms.get_key_rotation_status(KeyId=key_id)
+                            rotation_enabled = rotation_status.get('KeyRotationEnabled', False)
+
+                            remediation_status = "N/A"
+                            if rotation_enabled:
+                                logger.info(f"✅ KMS Key '{key_id}' [{region}]: Secure (Rotation Enabled)")
+                                findings.append({
+                                    "Service": "KMS",
+                                    "Region": region,
+                                    "ResourceID": key_id,
+                                    "ResourceName": key_details.get('Description', 'KMS CMK'),
+                                    "Status": "PASS",
+                                    "Finding": "KMS Customer Managed Key rotation is enabled",
+                                    "Severity": "Low",
+                                    "RemediationStatus": remediation_status
+                                })
+                            else:
+                                logger.warning(f"❌ KMS Key '{key_id}' [{region}]: WARNING - Key Rotation is DISABLED!")
+                                if remediate:
+                                    if self.dry_run:
+                                        logger.info(f"[DRY-RUN] Would enable key rotation for KMS CMK '{key_id}'")
+                                        remediation_status = "Dry-Run: Enable KMS Key Rotation"
+                                    else:
+                                        try:
+                                            logger.info(f"Remediating KMS Key '{key_id}': Enabling rotation...")
+                                            regional_kms.enable_key_rotation(KeyId=key_id)
+                                            logger.info(f"✅ KMS Key '{key_id}': Rotation successfully enabled")
+                                            remediation_status = "Remediated"
+                                        except ClientError as re:
+                                            logger.error(f"Failed to enable rotation for KMS Key '{key_id}': {re}")
+                                            remediation_status = f"Remediation Failed: {re.response['Error']['Message']}"
+                                else:
+                                    remediation_status = "None (Remediation not requested)"
+
+                                findings.append({
+                                    "Service": "KMS",
+                                    "Region": region,
+                                    "ResourceID": key_id,
+                                    "ResourceName": key_details.get('Description', 'KMS CMK'),
+                                    "Status": "FAIL",
+                                    "Finding": "KMS Customer Managed Key rotation is disabled",
+                                    "Severity": "Medium",
+                                    "RemediationStatus": remediation_status
+                                })
+                    except ClientError as e:
+                        logger.error(f"Error checking KMS key '{key_id}' details/rotation status: {e}")
+        return findings
+
 def print_table(findings):
     """Formats and prints findings as a text table."""
     if not findings:
@@ -1064,6 +1135,8 @@ def main():
         all_findings.extend(auditor.audit_security_groups(scan_regions, remediate=args.remediate))
     if "ebs" in args.services:
         all_findings.extend(auditor.audit_ebs(scan_regions, remediate=args.remediate))
+    if "kms" in args.services:
+        all_findings.extend(auditor.audit_kms(scan_regions, remediate=args.remediate))
 
     failed_count = sum(1 for f in all_findings if f["Status"] == "FAIL")
     logger.info(f"Audit completed. Total findings: {len(all_findings)}. Failures found: {failed_count}.")
@@ -1110,6 +1183,7 @@ def lambda_handler(event, context):
     all_findings.extend(auditor.audit_iam(remediate=True))
     all_findings.extend(auditor.audit_security_groups(scan_regions, remediate=True))
     all_findings.extend(auditor.audit_ebs(scan_regions, remediate=True))
+    all_findings.extend(auditor.audit_kms(scan_regions, remediate=True))
 
     failed_count = sum(1 for f in all_findings if f["Status"] == "FAIL")
     logger.info(f"Lambda Audit completed. Total findings: {len(all_findings)}. Failures found: {failed_count}.")
