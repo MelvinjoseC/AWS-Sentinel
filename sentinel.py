@@ -48,7 +48,7 @@ def setup_logging(level, json_format=False):
 logger = logging.getLogger("aws-sentinel")
 
 class AWSSentinelAuditor:
-    def __init__(self, session=None, dry_run=False, config_path=None):
+    def __init__(self, session=None, dry_run=False, config_path=None, assume_role_arn=None, assume_role_session_name=None):
         from botocore.config import Config
         self.session = session or boto3.Session()
         self.dry_run = dry_run
@@ -61,6 +61,26 @@ class AWSSentinelAuditor:
                 'mode': 'standard'
             }
         )
+
+        if assume_role_arn:
+            session_name = assume_role_session_name or "AWSSentinelAuditorSession"
+            logger.info(f"Assuming role {assume_role_arn}...")
+            try:
+                sts_client = self.session.client('sts', config=self.botocore_config)
+                assumed_role = sts_client.assume_role(
+                    RoleArn=assume_role_arn,
+                    RoleSessionName=session_name
+                )
+                credentials = assumed_role['Credentials']
+                self.session = boto3.Session(
+                    aws_access_key_id=credentials['AccessKeyId'],
+                    aws_secret_access_key=credentials['SecretAccessKey'],
+                    aws_session_token=credentials['SessionToken'],
+                    region_name=self.session.region_name
+                )
+                logger.info("Successfully assumed role and initialized new session.")
+            except ClientError as e:
+                logger.error(f"Failed to assume role {assume_role_arn}: {e}. Falling back to default credentials.")
 
         self.s3_client = self.session.client('s3', config=self.botocore_config)
         self.iam_client = self.session.client('iam', config=self.botocore_config)
@@ -1226,6 +1246,14 @@ def main():
         help="AWS profile name to use for authentication"
     )
     parser.add_argument(
+        "--assume-role-arn",
+        help="IAM Role ARN to assume for scanning a target AWS account"
+    )
+    parser.add_argument(
+        "--assume-role-session-name",
+        help="Session name to use when assuming the IAM role"
+    )
+    parser.add_argument(
         "--json-logging",
         action="store_true",
         help="Output logs in structured JSON format"
@@ -1244,7 +1272,13 @@ def main():
         logger.error(f"AWS Profile Error: {e}")
         sys.exit(1)
 
-    auditor = AWSSentinelAuditor(session=session, dry_run=args.dry_run, config_path=args.config)
+    auditor = AWSSentinelAuditor(
+        session=session,
+        dry_run=args.dry_run,
+        config_path=args.config,
+        assume_role_arn=args.assume_role_arn,
+        assume_role_session_name=args.assume_role_session_name
+    )
 
     # Determine regions to scan
     scan_regions = []
@@ -1308,7 +1342,15 @@ def lambda_handler(event, context):
     config_file = os.environ.get("CONFIG_FILE", "config.yaml")
     config_path = config_file if os.path.exists(config_file) else None
 
-    auditor = AWSSentinelAuditor(dry_run=dry_run, config_path=config_path)
+    assume_role_arn = os.environ.get("ASSUME_ROLE_ARN")
+    assume_role_session_name = os.environ.get("ASSUME_ROLE_SESSION_NAME")
+
+    auditor = AWSSentinelAuditor(
+        dry_run=dry_run,
+        config_path=config_path,
+        assume_role_arn=assume_role_arn,
+        assume_role_session_name=assume_role_session_name
+    )
 
     scan_regions = auditor.get_active_regions()
 
