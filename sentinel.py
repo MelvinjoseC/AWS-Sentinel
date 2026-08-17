@@ -891,6 +891,73 @@ class AWSSentinelAuditor:
                         logger.error(f"Error checking KMS key '{key_id}' details/rotation status: {e}")
         return findings
 
+    def audit_cloudtrail(self):
+        """Audits CloudTrail logging configurations for at least one active multi-region trail."""
+        findings = []
+        logger.info("Starting CloudTrail logging compliance audit...")
+
+        try:
+            ct_client = self.session.client('cloudtrail', config=self.botocore_config)
+            trails = ct_client.describe_trails().get('trailList', [])
+        except ClientError as e:
+            logger.error(f"Failed to describe CloudTrails: {e}")
+            findings.append({
+                "Service": "CloudTrail",
+                "Region": "global",
+                "ResourceID": "CloudTrailLoggingStatus",
+                "ResourceName": "AWS CloudTrail",
+                "Status": "ERROR",
+                "Finding": f"Failed to retrieve CloudTrail trails: {e.response['Error']['Message']}",
+                "Severity": "Medium",
+                "RemediationStatus": "N/A"
+            })
+            return findings
+
+        has_active_multi_region_trail = False
+        active_trail_name = ""
+
+        for trail in trails:
+            trail_name = trail.get('Name')
+            trail_arn = trail.get('TrailARN')
+            is_multi_region = trail.get('IsMultiRegionTrail', False)
+
+            try:
+                status_resp = ct_client.get_trail_status(Name=trail_arn)
+                is_logging = status_resp.get('IsLogging', False)
+                if is_logging and is_multi_region:
+                    has_active_multi_region_trail = True
+                    active_trail_name = trail_name
+                    break
+            except ClientError as e:
+                logger.error(f"Failed to get trail status for '{trail_name}': {e}")
+
+        if has_active_multi_region_trail:
+            logger.info(f"✅ CloudTrail: Compliant active multi-region trail '{active_trail_name}' found.")
+            findings.append({
+                "Service": "CloudTrail",
+                "Region": "global",
+                "ResourceID": "CloudTrailLoggingStatus",
+                "ResourceName": "AWS CloudTrail",
+                "Status": "PASS",
+                "Finding": f"Compliant active multi-region CloudTrail '{active_trail_name}' is enabled",
+                "Severity": "Low",
+                "RemediationStatus": "N/A"
+            })
+        else:
+            logger.warning("❌ CloudTrail: No active multi-region logging trail found in the account!")
+            findings.append({
+                "Service": "CloudTrail",
+                "Region": "global",
+                "ResourceID": "CloudTrailLoggingStatus",
+                "ResourceName": "AWS CloudTrail",
+                "Status": "FAIL",
+                "Finding": "No active multi-region CloudTrail trail logging is enabled in the account",
+                "Severity": "High",
+                "RemediationStatus": "Manual Intervention Required"
+            })
+
+        return findings
+
 def print_table(findings):
     """Formats and prints findings as a text table."""
     if not findings:
@@ -1137,6 +1204,8 @@ def main():
         all_findings.extend(auditor.audit_ebs(scan_regions, remediate=args.remediate))
     if "kms" in args.services:
         all_findings.extend(auditor.audit_kms(scan_regions, remediate=args.remediate))
+    if "cloudtrail" in args.services:
+        all_findings.extend(auditor.audit_cloudtrail())
 
     failed_count = sum(1 for f in all_findings if f["Status"] == "FAIL")
     logger.info(f"Audit completed. Total findings: {len(all_findings)}. Failures found: {failed_count}.")
@@ -1184,6 +1253,7 @@ def lambda_handler(event, context):
     all_findings.extend(auditor.audit_security_groups(scan_regions, remediate=True))
     all_findings.extend(auditor.audit_ebs(scan_regions, remediate=True))
     all_findings.extend(auditor.audit_kms(scan_regions, remediate=True))
+    all_findings.extend(auditor.audit_cloudtrail())
 
     failed_count = sum(1 for f in all_findings if f["Status"] == "FAIL")
     logger.info(f"Lambda Audit completed. Total findings: {len(all_findings)}. Failures found: {failed_count}.")
