@@ -538,3 +538,43 @@ def test_audit_kms_rotation_and_remediation():
     # Verify key rotation is now enabled in KMS
     status = kms.get_key_rotation_status(KeyId=key_id)
     assert status['KeyRotationEnabled'] is True
+
+@mock_aws
+def test_audit_cloudtrail_compliance():
+    s3 = boto3.client('s3', region_name='us-east-1')
+    s3.create_bucket(Bucket='mock-bucket')
+    ct = boto3.client('cloudtrail', region_name='us-east-1')
+
+    # Initially no trails exist
+    auditor = AWSSentinelAuditor()
+    findings = auditor.audit_cloudtrail()
+    assert len(findings) == 1
+    assert findings[0]['Status'] == 'FAIL'
+    assert "no active multi-region" in findings[0]['Finding'].lower()
+
+    # Create a non-compliant trail (single region, not logging)
+    ct.create_trail(
+        Name='single-region-trail',
+        S3BucketName='mock-bucket',
+        IsMultiRegionTrail=False
+    )
+    findings = auditor.audit_cloudtrail()
+    assert len(findings) == 1
+    assert findings[0]['Status'] == 'FAIL'
+
+    # Create a multi-region trail but not logging
+    ct.create_trail(
+        Name='multi-region-inactive-trail',
+        S3BucketName='mock-bucket',
+        IsMultiRegionTrail=True
+    )
+    findings = auditor.audit_cloudtrail()
+    assert len(findings) == 1
+    assert findings[0]['Status'] == 'FAIL'
+
+    # Start logging on the multi-region trail (makes it compliant)
+    ct.start_logging(Name='multi-region-inactive-trail')
+    findings = auditor.audit_cloudtrail()
+    assert len(findings) == 1
+    assert findings[0]['Status'] == 'PASS'
+    assert "compliant active multi-region" in findings[0]['Finding'].lower()

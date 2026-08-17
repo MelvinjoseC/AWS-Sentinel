@@ -897,7 +897,8 @@ class AWSSentinelAuditor:
         logger.info("Starting CloudTrail logging compliance audit...")
 
         try:
-            ct_client = self.session.client('cloudtrail', config=self.botocore_config)
+            default_region = self.session.region_name or 'us-east-1'
+            ct_client = self.session.client('cloudtrail', region_name=default_region, config=self.botocore_config)
             trails = ct_client.describe_trails().get('trailList', [])
         except ClientError as e:
             logger.error(f"Failed to describe CloudTrails: {e}")
