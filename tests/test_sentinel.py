@@ -512,3 +512,29 @@ def test_audit_ebs_compliance_and_remediation():
     # Verify EBS encryption by default is now enabled
     status = ec2.get_ebs_encryption_by_default()
     assert status['EbsEncryptionByDefault'] is True
+
+@mock_aws
+def test_audit_kms_rotation_and_remediation():
+    kms = boto3.client('kms', region_name='us-east-1')
+
+    # Create a Customer Managed Key (CMK)
+    key = kms.create_key(Description='Test CMK Key')
+    key_id = key['KeyMetadata']['KeyId']
+
+    # Check compliance (rotation disabled by default)
+    auditor = AWSSentinelAuditor(dry_run=False)
+    findings = auditor.audit_kms(regions=['us-east-1'], remediate=False)
+
+    kms_finding = next(f for f in findings if f['ResourceID'] == key_id)
+    assert kms_finding['Status'] == 'FAIL'
+    assert kms_finding['RemediationStatus'] == 'None (Remediation not requested)'
+
+    # Remediate to enable key rotation
+    findings_remediate = auditor.audit_kms(regions=['us-east-1'], remediate=True)
+    kms_finding_rem = next(f for f in findings_remediate if f['ResourceID'] == key_id)
+    assert kms_finding_rem['Status'] == 'FAIL'
+    assert kms_finding_rem['RemediationStatus'] == 'Remediated'
+
+    # Verify key rotation is now enabled in KMS
+    status = kms.get_key_rotation_status(KeyId=key_id)
+    assert status['KeyRotationEnabled'] is True
