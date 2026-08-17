@@ -470,3 +470,45 @@ def test_json_logging_formatter():
     assert parsed['level'] == 'INFO'
     assert parsed['message'] == 'This is a test message'
     assert 'timestamp' in parsed
+
+@mock_aws
+def test_audit_ebs_compliance_and_remediation():
+    ec2 = boto3.client('ec2', region_name='us-east-1')
+
+    # Create unencrypted and encrypted volumes
+    vol_unencrypted = ec2.create_volume(
+        AvailabilityZone='us-east-1a',
+        Size=10,
+        Encrypted=False
+    )
+    vol_id_unenc = vol_unencrypted['VolumeId']
+
+    vol_encrypted = ec2.create_volume(
+        AvailabilityZone='us-east-1a',
+        Size=10,
+        Encrypted=True
+    )
+    vol_id_enc = vol_encrypted['VolumeId']
+
+    auditor = AWSSentinelAuditor(dry_run=False)
+    findings = auditor.audit_ebs(regions=['us-east-1'], remediate=False)
+
+    ebs_def_finding = next(f for f in findings if f['ResourceID'] == 'EbsEncryptionByDefault-us-east-1')
+    assert ebs_def_finding['Status'] == 'FAIL'
+    assert ebs_def_finding['RemediationStatus'] == 'None (Remediation not requested)'
+
+    unenc_finding = next(f for f in findings if f['ResourceID'] == vol_id_unenc)
+    assert unenc_finding['Status'] == 'FAIL'
+
+    enc_finding = next(f for f in findings if f['ResourceID'] == vol_id_enc)
+    assert enc_finding['Status'] == 'PASS'
+
+    # Test remediation for EBS Encryption by Default
+    findings_remediate = auditor.audit_ebs(regions=['us-east-1'], remediate=True)
+    ebs_def_rem = next(f for f in findings_remediate if f['ResourceID'] == 'EbsEncryptionByDefault-us-east-1')
+    assert ebs_def_rem['Status'] == 'FAIL'
+    assert ebs_def_rem['RemediationStatus'] == 'Remediated'
+
+    # Verify EBS encryption by default is now enabled
+    status = ec2.get_ebs_encryption_by_default()
+    assert status['EbsEncryptionByDefault'] is True
