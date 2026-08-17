@@ -618,3 +618,14 @@ def test_audit_security_groups_all_traffic():
     # Verify rule is revoked in ec2
     sg_details = ec2.describe_security_groups(GroupIds=[sg_id])['SecurityGroups'][0]
     assert len(sg_details['IpPermissions']) == 0
+
+@mock_aws
+def test_audit_assume_role_session_setup():
+    # Initialize the auditor specifying an assume_role_arn
+    auditor = AWSSentinelAuditor(
+        assume_role_arn="arn:aws:iam::123456789012:role/SentinelAuditorRole",
+        assume_role_session_name="test-session"
+    )
+    # The session credentials should now be mock assumed credentials
+    creds = auditor.session.get_credentials().get_frozen_credentials()
+    assert creds.access_key.startswith("ASIA")
