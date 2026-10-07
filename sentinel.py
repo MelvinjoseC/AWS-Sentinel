@@ -1581,48 +1581,58 @@ def lambda_handler(event, context):
     """AWS Lambda entrypoint handler."""
     import os
     logger.info("AWS Sentinel auditor triggered via Lambda.")
-    dry_run = os.environ.get("DRY_RUN", "False").lower() in ["true", "1", "yes"]
-    slack_webhook = os.environ.get("SLACK_WEBHOOK")
-    teams_webhook = os.environ.get("TEAMS_WEBHOOK")
+    try:
+        dry_run = os.environ.get("DRY_RUN", "False").lower() in ["true", "1", "yes"]
+        remediate = os.environ.get("REMEDIATE", "True").lower() in ["true", "1", "yes"]
+        slack_webhook = os.environ.get("SLACK_WEBHOOK")
+        teams_webhook = os.environ.get("TEAMS_WEBHOOK")
 
-    config_file = os.environ.get("CONFIG_FILE", "config.yaml")
-    config_path = config_file if os.path.exists(config_file) else None
+        config_file = os.environ.get("CONFIG_FILE", "config.yaml")
+        config_path = config_file if os.path.exists(config_file) else None
 
-    assume_role_arn = os.environ.get("ASSUME_ROLE_ARN")
-    assume_role_session_name = os.environ.get("ASSUME_ROLE_SESSION_NAME")
+        assume_role_arn = os.environ.get("ASSUME_ROLE_ARN")
+        assume_role_session_name = os.environ.get("ASSUME_ROLE_SESSION_NAME")
 
-    auditor = AWSSentinelAuditor(
-        dry_run=dry_run,
-        config_path=config_path,
-        assume_role_arn=assume_role_arn,
-        assume_role_session_name=assume_role_session_name
-    )
+        auditor = AWSSentinelAuditor(
+            dry_run=dry_run,
+            config_path=config_path,
+            assume_role_arn=assume_role_arn,
+            assume_role_session_name=assume_role_session_name
+        )
 
-    scan_regions = auditor.get_active_regions()
+        scan_regions = auditor.get_active_regions()
 
-    all_findings = []
-    all_findings.extend(auditor.audit_s3(remediate=True))
-    all_findings.extend(auditor.audit_iam(remediate=True))
-    all_findings.extend(auditor.audit_security_groups(scan_regions, remediate=True))
-    all_findings.extend(auditor.audit_ebs(scan_regions, remediate=True))
-    all_findings.extend(auditor.audit_kms(scan_regions, remediate=True))
-    all_findings.extend(auditor.audit_cloudtrail())
+        all_findings = []
+        all_findings.extend(auditor.audit_s3(remediate=remediate))
+        all_findings.extend(auditor.audit_iam(remediate=remediate))
+        all_findings.extend(auditor.audit_security_groups(scan_regions, remediate=remediate))
+        all_findings.extend(auditor.audit_ebs(scan_regions, remediate=remediate))
+        all_findings.extend(auditor.audit_kms(scan_regions, remediate=remediate))
+        all_findings.extend(auditor.audit_cloudtrail())
 
-    failed_count = sum(1 for f in all_findings if f["Status"] == "FAIL")
-    logger.info(f"Lambda Audit completed. Total findings: {len(all_findings)}. Failures found: {failed_count}.")
+        failed_count = sum(1 for f in all_findings if f["Status"] == "FAIL")
+        logger.info(f"Lambda Audit completed. Total findings: {len(all_findings)}. Failures found: {failed_count}.")
 
-    if slack_webhook:
-        send_slack_notification(slack_webhook, all_findings)
-    if teams_webhook:
-        send_teams_notification(teams_webhook, all_findings)
+        if slack_webhook:
+            send_slack_notification(slack_webhook, all_findings)
+        if teams_webhook:
+            send_teams_notification(teams_webhook, all_findings)
 
-    return {
-        "statusCode": 200,
-        "body": json.dumps({
-            "total_findings": len(all_findings),
-            "failures": failed_count
-        })
-    }
+        return {
+            "statusCode": 200,
+            "body": json.dumps({
+                "total_findings": len(all_findings),
+                "failures": failed_count
+            })
+        }
+    except Exception as e:
+        logger.exception(f"Unhandled error during Lambda audit execution: {e}")
+        return {
+            "statusCode": 500,
+            "body": json.dumps({
+                "error": str(e)
+            })
+        }
 
 if __name__ == "__main__":
     main()
