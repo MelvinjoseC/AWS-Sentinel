@@ -630,3 +630,51 @@ def test_audit_assume_role_session_setup():
     # The session credentials should now be mock assumed credentials
     creds = auditor.session.get_credentials().get_frozen_credentials()
     assert creds.access_key.startswith("ASIA")
+
+
+def test_severity_overrides_application():
+    auditor = AWSSentinelAuditor()
+    auditor.config["severity_overrides"] = {
+        "S3.Public Access Block is not enabled": "Critical",
+        "EBS Volume is not encrypted": "Medium"
+    }
+
+    mock_findings = [
+        {
+            "Service": "S3",
+            "Region": "global",
+            "ResourceID": "test-bucket",
+            "ResourceName": "test-bucket",
+            "Status": "FAIL",
+            "Finding": "Public Access Block is not enabled",
+            "Severity": "High",
+            "RemediationStatus": "None"
+        },
+        {
+            "Service": "EBS",
+            "Region": "us-east-1",
+            "ResourceID": "vol-12345",
+            "ResourceName": "vol-12345",
+            "Status": "FAIL",
+            "Finding": "EBS Volume is not encrypted",
+            "Severity": "High",
+            "RemediationStatus": "None"
+        },
+        {
+            "Service": "IAM",
+            "Region": "global",
+            "ResourceID": "user-1",
+            "ResourceName": "user-1",
+            "Status": "FAIL",
+            "Finding": "Multi-Factor Authentication (MFA) is disabled",
+            "Severity": "High",
+            "RemediationStatus": "None"
+        }
+    ]
+
+    processed = auditor._apply_severity_overrides(mock_findings)
+    assert processed[0]["Severity"] == "Critical"
+    assert processed[1]["Severity"] == "Medium"
+    # Unchanged
+    assert processed[2]["Severity"] == "High"
+
