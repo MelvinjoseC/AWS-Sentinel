@@ -15,12 +15,19 @@ FROM python:3.10-slim AS runner
 
 WORKDIR /app
 
+# Create non-privileged service user for least privilege compliance
+RUN groupadd -g 10001 sentinel && \
+    useradd -u 10001 -g sentinel -m -d /home/sentinel -s /bin/sh sentinel
+
 # Copy installed packages from builder
-COPY --from=builder /root/.local /root/.local
+COPY --from=builder /root/.local /home/sentinel/.local
 COPY . .
+RUN chown -R sentinel:sentinel /app /home/sentinel
+
+USER sentinel
 
 # Set PATH to find user-installed scripts
-ENV PATH=/root/.local/bin:$PATH
+ENV PATH=/home/sentinel/.local/bin:$PATH
 ENV PYTHONUNBUFFERED=1
 
 ENTRYPOINT ["python", "sentinel.py"]

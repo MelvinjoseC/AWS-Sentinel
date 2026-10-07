@@ -4,7 +4,7 @@ services:
   auditor:
     build: .
     volumes:
-      - ~/.aws:/root/.aws:ro
+      - ~/.aws:/home/sentinel/.aws:ro
       - .:/app
     environment:
       - AWS_PROFILE=${AWS_PROFILE:-default}
