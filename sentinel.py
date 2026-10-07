@@ -1177,7 +1177,7 @@ def send_slack_notification(webhook_url, findings):
             data=json.dumps(payload).encode('utf-8'),
             headers={'Content-Type': 'application/json'}
         )
-        with urllib.request.urlopen(req) as response:
+        with urllib.request.urlopen(req, timeout=10) as response:
             if response.status == 200:
                 logger.info("Slack notification sent successfully.")
             else:
@@ -1242,7 +1242,7 @@ def send_teams_notification(webhook_url, findings):
             data=json.dumps(payload).encode('utf-8'),
             headers={'Content-Type': 'application/json'}
         )
-        with urllib.request.urlopen(req) as response:
+        with urllib.request.urlopen(req, timeout=10) as response:
             if response.status in [200, 201]:
                 logger.info("MS Teams notification sent successfully.")
             else:
