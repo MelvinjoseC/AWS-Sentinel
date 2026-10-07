@@ -732,3 +732,59 @@ def test_audit_security_groups_all_traffic_selective_revocation_and_no_false_pas
     assert '0.0.0.0/0' not in remaining_ranges
 
 
+def test_audit_cloudtrail_shadow_trails():
+    auditor = AWSSentinelAuditor()
+    mock_ct_client = MagicMock()
+
+    # Trail returned from another region via shadow trails
+    mock_ct_client.describe_trails.return_value = {
+        'trailList': [
+            {
+                'Name': 'org-multi-region-trail',
+                'TrailARN': 'arn:aws:cloudtrail:us-west-2:123456789012:trail/org-multi-region-trail',
+                'IsMultiRegionTrail': True
+            }
+        ]
+    }
+    mock_ct_client.get_trail_status.return_value = {'IsLogging': True}
+
+    with patch.object(auditor.session, 'client', return_value=mock_ct_client):
+        findings = auditor.audit_cloudtrail()
+        # Ensure includeShadowTrails=True was passed
+        mock_ct_client.describe_trails.assert_called_once_with(includeShadowTrails=True)
+        assert len(findings) == 1
+        assert findings[0]['Status'] == 'PASS'
+        assert "Compliant active multi-region" in findings[0]['Finding']
+
+
+def test_audit_iam_root_account():
+    auditor = AWSSentinelAuditor()
+    mock_iam_client = MagicMock()
+
+    # Case 1: Root MFA enabled, no access keys (compliant)
+    mock_iam_client.get_account_summary.return_value = {
+        'SummaryMap': {
+            'AccountMFAEnabled': 1,
+            'AccountAccessKeysPresent': 0
+        }
+    }
+    auditor.iam_client = mock_iam_client
+    findings = auditor.audit_iam_root_account()
+    assert len(findings) == 2
+    assert all(f['Status'] == 'PASS' for f in findings)
+    assert all(f['Severity'] == 'Low' for f in findings)
+
+    # Case 2: Root MFA disabled, access keys present (non-compliant)
+    mock_iam_client.get_account_summary.return_value = {
+        'SummaryMap': {
+            'AccountMFAEnabled': 0,
+            'AccountAccessKeysPresent': 1
+        }
+    }
+    findings_fail = auditor.audit_iam_root_account()
+    assert len(findings_fail) == 2
+    assert all(f['Status'] == 'FAIL' for f in findings_fail)
+    assert all(f['Severity'] == 'Critical' for f in findings_fail)
+
+
+
