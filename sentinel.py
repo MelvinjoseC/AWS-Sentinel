@@ -715,7 +715,10 @@ class AWSSentinelAuditor:
                 'require_symbols': ('RequireSymbols', 'Require Symbols'),
                 'require_numbers': ('RequireNumbers', 'Require Numbers'),
                 'require_uppercase': ('RequireUppercaseCharacters', 'Require Uppercase'),
-                'require_lowercase': ('RequireLowercaseCharacters', 'Require Lowercase')
+                'require_lowercase': ('RequireLowercaseCharacters', 'Require Lowercase'),
+                'max_password_age_days': ('MaxPasswordAge', 'Max Password Age'),
+                'password_reuse_prevention': ('PasswordReusePrevention', 'Password Reuse Prevention'),
+                'hard_expiry': ('HardExpiry', 'Hard Expiry')
             }
 
             failures = []
@@ -728,6 +731,15 @@ class AWSSentinelAuditor:
                 if config_key == 'minimum_length':
                     if actual is None or actual < expected:
                         failures.append(f"{name} (Expected: >= {expected}, Actual: {actual})")
+                elif config_key == 'max_password_age_days':
+                    if actual is None or actual > expected:
+                        failures.append(f"{name} (Expected: <= {expected}, Actual: {actual})")
+                elif config_key == 'password_reuse_prevention':
+                    if actual is None or actual < expected:
+                        failures.append(f"{name} (Expected: >= {expected}, Actual: {actual})")
+                elif config_key == 'hard_expiry':
+                    if actual is None or actual != expected:
+                        failures.append(f"{name} (Expected: {expected}, Actual: {actual})")
                 else:
                     if not actual:
                         failures.append(f"{name} (Expected: {expected}, Actual: {actual})")
