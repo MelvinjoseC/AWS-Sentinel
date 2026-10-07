@@ -682,6 +682,9 @@ class AWSSentinelAuditor:
 
                         if is_all_traffic_public:
                             logger.warning(f"❌ SG {group_name} ({group_id}) [{region}]: ALL TRAFFIC is open to the public internet!")
+                            for target in ports_to_check:
+                                failed_ports.add(target.get('port'))
+
                             all_traffic_rem_status = "N/A"
                             if remediate:
                                 if self.dry_run:
@@ -690,9 +693,17 @@ class AWSSentinelAuditor:
                                 else:
                                     try:
                                         logger.info(f"Remediating SG {group_name} ({group_id}): Revoking ALL TRAFFIC public ingress rule...")
+                                        rule_to_revoke = {'IpProtocol': '-1'}
+                                        ip_ranges = [{'CidrIp': '0.0.0.0/0'}] if any(ip.get('CidrIp') == '0.0.0.0/0' for ip in rule.get('IpRanges', [])) else []
+                                        ipv6_ranges = [{'CidrIpv6': '::/0'}] if any(ipv6.get('CidrIpv6') == '::/0' for ipv6 in rule.get('Ipv6Ranges', [])) else []
+                                        if ip_ranges:
+                                            rule_to_revoke['IpRanges'] = ip_ranges
+                                        if ipv6_ranges:
+                                            rule_to_revoke['Ipv6Ranges'] = ipv6_ranges
+
                                         regional_ec2.revoke_security_group_ingress(
                                             GroupId=group_id,
-                                            IpPermissions=[rule]
+                                            IpPermissions=[rule_to_revoke]
                                         )
                                         logger.info(f"✅ SG {group_name} ({group_id}): Successfully Remediated All Traffic rule")
                                         all_traffic_rem_status = "Remediated"
