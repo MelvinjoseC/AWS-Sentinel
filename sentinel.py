@@ -258,21 +258,25 @@ class AWSSentinelAuditor:
                     if e.response['Error']['Code'] == 'ServerSideEncryptionConfigurationNotFoundError':
                         logger.warning(f"❌ S3 Bucket '{name}': WARNING - Default Encryption NOT Enabled!")
 
+                        enc_algo = self.config.get('s3', {}).get('encryption_algorithm', 'AES256')
+                        kms_key_id = self.config.get('s3', {}).get('kms_master_key_id')
+                        apply_rule = {'SSEAlgorithm': enc_algo}
+                        if kms_key_id and enc_algo == 'aws:kms':
+                            apply_rule['KMSMasterKeyId'] = kms_key_id
+
                         if remediate:
                             if self.dry_run:
-                                logger.info(f"[DRY-RUN] Would enable default AES256 encryption for S3 bucket '{name}'")
-                                enc_remediation_status = "Dry-Run: Enable AES256 Encryption"
+                                logger.info(f"[DRY-RUN] Would enable default {enc_algo} encryption for S3 bucket '{name}'")
+                                enc_remediation_status = f"Dry-Run: Enable {enc_algo} Encryption"
                             else:
                                 try:
-                                    logger.info(f"Remediating S3 bucket '{name}': Enabling default AES256 encryption...")
+                                    logger.info(f"Remediating S3 bucket '{name}': Enabling default {enc_algo} encryption...")
                                     self.s3_client.put_bucket_encryption(
                                         Bucket=name,
                                         ServerSideEncryptionConfiguration={
                                             'Rules': [
                                                 {
-                                                    'ApplyServerSideEncryptionByDefault': {
-                                                        'SSEAlgorithm': 'AES256'
-                                                    }
+                                                    'ApplyServerSideEncryptionByDefault': apply_rule
                                                 }
                                             ]
                                         }
@@ -371,6 +375,71 @@ class AWSSentinelAuditor:
                         "Severity": "Medium",
                         "RemediationStatus": "N/A"
                     })
+
+            # 4. Secure Transport (HTTPS) Policy Check
+            if self.config.get('s3', {}).get('check_secure_transport', False):
+                try:
+                    policy_str = self.s3_client.get_bucket_policy(Bucket=name).get('Policy', '{}')
+                    policy = json.loads(policy_str)
+                    has_secure_transport_rule = False
+                    for stmt in policy.get('Statement', []):
+                        if stmt.get('Effect') == 'Deny':
+                            condition = stmt.get('Condition', {})
+                            bool_cond = condition.get('Bool', {})
+                            if bool_cond.get('aws:SecureTransport') in ['false', False, 'False']:
+                                has_secure_transport_rule = True
+                                break
+
+                    if has_secure_transport_rule:
+                        logger.info(f"✅ S3 Bucket '{name}': Secure (Enforces HTTPS/TLS Transport)")
+                        findings.append({
+                            "Service": "S3",
+                            "Region": "global",
+                            "ResourceID": name,
+                            "ResourceName": name,
+                            "Status": "PASS",
+                            "Finding": "Bucket policy enforces TLS/HTTPS secure transport",
+                            "Severity": "Low",
+                            "RemediationStatus": "N/A"
+                        })
+                    else:
+                        logger.warning(f"❌ S3 Bucket '{name}': WARNING - Bucket policy does NOT enforce HTTPS/TLS transport!")
+                        findings.append({
+                            "Service": "S3",
+                            "Region": "global",
+                            "ResourceID": name,
+                            "ResourceName": name,
+                            "Status": "FAIL",
+                            "Finding": "Bucket policy does not enforce TLS/HTTPS secure transport",
+                            "Severity": "High",
+                            "RemediationStatus": "Manual Intervention Required"
+                        })
+                except ClientError as e:
+                    if e.response['Error']['Code'] == 'NoSuchBucketPolicy':
+                        logger.warning(f"❌ S3 Bucket '{name}': WARNING - No bucket policy defined (Secure Transport NOT enforced)!")
+                        findings.append({
+                            "Service": "S3",
+                            "Region": "global",
+                            "ResourceID": name,
+                            "ResourceName": name,
+                            "Status": "FAIL",
+                            "Finding": "Bucket policy does not enforce TLS/HTTPS secure transport",
+                            "Severity": "High",
+                            "RemediationStatus": "Manual Intervention Required"
+                        })
+                    else:
+                        logger.error(f"Error checking bucket policy for '{name}': {e}")
+                        findings.append({
+                            "Service": "S3",
+                            "Region": "global",
+                            "ResourceID": name,
+                            "ResourceName": name,
+                            "Status": "ERROR",
+                            "Finding": f"Failed to retrieve bucket policy: {e.response['Error']['Message']}",
+                            "Severity": "Medium",
+                            "RemediationStatus": "N/A"
+                        })
+
         return self._apply_severity_overrides(findings)
 
     def audit_iam(self, remediate=False):
