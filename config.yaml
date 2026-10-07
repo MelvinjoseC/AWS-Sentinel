@@ -14,12 +14,20 @@ s3:
   # Enable default compliance checks
   check_encryption: true
   check_versioning: true
+  # Verify bucket policy enforces HTTPS TLS transport
+  check_secure_transport: false
+  # Default encryption algorithm ("AES256" or "aws:kms")
+  encryption_algorithm: "AES256"
+  # KMS Key ID / ARN when using aws:kms (optional)
+  kms_master_key_id: null
 
 iam:
   # Maximum age of active access keys in days (default: 90)
   max_access_key_age_days: 90
   # Maximum allowed inactive/unused access key days (default: 90)
   max_unused_access_key_days: 90
+  # Audit AWS root account for MFA and active access keys (CIS Benchmark 1.4 & 1.5)
+  check_root_account: true
   # IAM Password Policy requirements
   password_policy:
     require_uppercase: true
@@ -27,6 +35,8 @@ iam:
     require_numbers: true
     require_symbols: true
     minimum_length: 14
+    max_password_age_days: 90
+    password_reuse_prevention: 24
 
 ec2:
   # Additional ports to scan for public exposure (0.0.0.0/0)

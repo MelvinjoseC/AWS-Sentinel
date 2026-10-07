@@ -13,31 +13,36 @@ It scans the following key resources and configurations:
    - Detects and remediates buckets without `Public Access Block` enabled.
    - Detects and remediates buckets missing default `AES256/KMS` server-side encryption.
    - Detects and remediates buckets missing default `Bucket Versioning`.
+   - Checks bucket policies for enforced SSL/TLS Secure Transport (`aws:SecureTransport`).
 2. **IAM Credential Protection & Hygiene:**
    - Audits all IAM users to ensure Multi-Factor Authentication (MFA) is active.
    - Identifies active IAM user Access Keys older than 90 days.
    - Audits and deactivates unused IAM Access Keys (unused for > 90 days).
-   - Audits the account-wide IAM Password Policy against production-grade settings.
+   - Audits the account-wide IAM Password Policy against production-grade settings (complexity, expiration, reuse).
+   - Audits the AWS Root Account to verify MFA is enabled and no active root access keys exist.
 3. **Network Ingress Protection (Security Groups):**
    - Scans EC2 Security Groups for publicly open ports (`0.0.0.0/0` or `::/0`).
    - Supports scanning and auto-revoking open rules for Port 22 (SSH), Port 3389 (RDP), Port 21 (FTP), and other custom ports.
-   - Identifies and revokes rules exposing "All Traffic" (protocol `-1`) to the public internet.
+   - Identifies and revokes rules exposing "All Traffic" (protocol `-1`) to the public internet while preserving private CIDRs.
 4. **KMS Key Rotation:**
    - Audits KMS Customer Managed Keys (CMKs) to ensure key rotation is enabled. Auto-remediates by enabling rotation.
 5. **EBS Volume Encryption:**
    - Checks if EBS Encryption by Default is enabled in all regions. Auto-remediates by enabling default encryption.
    - Audits individual EBS volumes in all active regions to verify they are encrypted.
 6. **CloudTrail Auditing:**
-   - Verifies if at least one active, multi-region CloudTrail is configured and logging.
+   - Verifies if at least one active, multi-region CloudTrail is configured and logging (including shadow trail discovery).
 
 ---
 
 ## 🛠️ Features
 
 - **Multi-Region Capabilities:** Scan a single region, a custom list of regions, or scan all active AWS regions (`--regions all`).
-- **Flexible Declarative Configuration:** Control checks, exclude specific resources (e.g. S3 bucket exclusions), and custom port scans via `config.yaml`.
+- **Flexible Declarative Configuration:** Control checks, severity overrides, exclude specific resources (e.g. S3 bucket exclusions), and custom port scans via `config.yaml`.
 - **Auto-Remediation with Dry-Run Safety:** Automatically repair insecure resources (`--remediate`). Use `--dry-run` to preview changes before making destructive edits.
+- **CI/CD Security Gate:** Fail builds on compliance failures with `--fail-on-findings` or `--fail-on-severity Critical`.
 - **Structured Reporting:** Export audit findings to JSON, CSV, or formatted ASCII table to files or console.
+- **Enterprise-Grade Logging:** Supports standard human-readable logging and structured JSON logging (`--json-logging`) for ELK, Datadog, or Splunk ingestion.
+- **Hardened Containerization:** Runs inside Kubernetes CronJobs or CI runners as non-root `sentinel` user (UID 10001).
 - **Enterprise-Grade Logging:** Supports standard human-readable logging and structured JSON logging (`--json-logging`) for ELK, Datadog, or Splunk ingestion.
 - **CI/CD Security Gates:** Includes built-in pytest suite, code linter (Ruff), security scan (Bandit), and dependency audit (pip-audit) integrated into GitHub Actions.
 - **Containerized Execution:** Ready to run inside Kubernetes CronJobs or CI runners using the included `Dockerfile` and `docker-compose.yml`.
@@ -63,16 +68,22 @@ s3:
     - "my-safe-public-assets-bucket" # Buckets to exclude from audits
   check_encryption: true
   check_versioning: true
+  check_secure_transport: false # Audit enforced TLS/HTTPS transport
+  encryption_algorithm: "AES256" # or "aws:kms"
+  kms_master_key_id: null
 
 iam:
   max_access_key_age_days: 90
   max_unused_access_key_days: 90
+  check_root_account: true # Audit root account MFA and active access keys
   password_policy:
     require_uppercase: true
     require_lowercase: true
     require_numbers: true
     require_symbols: true
     minimum_length: 14
+    max_password_age_days: 90
+    password_reuse_prevention: 24
 
 ec2:
   ports_to_check:
@@ -108,6 +119,9 @@ pip install -r requirements.txt
 # Run a standard audit scan using the configuration file
 python sentinel.py --config config.yaml
 
+# Run as a CI/CD security gate (exit 1 if failures detected)
+python sentinel.py --config config.yaml --fail-on-findings
+
 # Run with custom profile and JSON logging
 python sentinel.py --config config.yaml --profile my-prod-profile --json-logging
 ```
@@ -118,8 +132,8 @@ python sentinel.py --config config.yaml --profile my-prod-profile --json-logging
 # Build the multi-stage minimal Docker image
 docker build -t aws-sentinel .
 
-# Run the auditor using your host AWS credentials
-docker run --rm -v ~/.aws:/root/.aws:ro aws-sentinel --config config.yaml
+# Run the auditor securely as non-root sentinel user
+docker run --rm -v ~/.aws:/home/sentinel/.aws:ro aws-sentinel --config config.yaml
 
 # Run tests or run audit using Docker Compose
 docker-compose run auditor
@@ -148,8 +162,11 @@ terraform apply -var="slack_webhook_url=https://hooks.slack.com/services/..."
 | Service | Check | Severity | Auto-Remediation Action |
 | --- | --- | --- | --- |
 | **S3** | Public Access Block | High | Applies standard public block configuration. |
-| **S3** | Server-Side Encryption | Medium | Enables default `AES256` encryption. |
+| **S3** | Server-Side Encryption | Medium | Enables default `AES256` or `KMS` encryption. |
 | **S3** | Bucket Versioning | Medium | Enables bucket versioning. |
+| **S3** | Secure Transport (HTTPS) | High | *Manual Action.* Prompts adding HTTPS-only bucket policy. |
+| **IAM** | Root Account MFA | Critical | *Manual Action.* Prompts enabling hardware/virtual MFA on root. |
+| **IAM** | Root Account Access Keys | Critical | *Manual Action.* Prompts immediate deletion of root access keys. |
 | **IAM** | MFA Compliance | High | *Manual Action.* Requires user manual configuration. |
 | **IAM** | Access Key Age | Medium | *Manual Action.* Prompts key rotation if age > 90 days. |
 | **IAM** | Password Policy | Medium | *Manual Action.* Highlights non-compliant configuration values. |
