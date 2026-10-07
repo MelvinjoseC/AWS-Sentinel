@@ -48,11 +48,13 @@ resource "aws_iam_policy" "lambda_policy" {
           "s3:PutEncryptionConfiguration",
           "s3:GetBucketVersioning",
           "s3:PutBucketVersioning",
+          "s3:GetBucketPolicy",
 
           # IAM permissions
           "iam:ListUsers",
           "iam:ListMFADevices",
           "iam:ListAccessKeys",
+          "iam:GetAccountSummary",
           "iam:GetAccountPasswordPolicy",
           "iam:GetAccessKeyLastUsed",
           "iam:UpdateAccessKey",
