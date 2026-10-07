@@ -3,7 +3,13 @@ from unittest.mock import MagicMock, patch
 import boto3
 from moto import mock_aws
 
-from sentinel import AWSSentinelAuditor, send_slack_notification, send_teams_notification
+from sentinel import (
+    AWSSentinelAuditor,
+    export_findings,
+    lambda_handler,
+    send_slack_notification,
+    send_teams_notification,
+)
 
 
 @mock_aws
@@ -785,6 +791,77 @@ def test_audit_iam_root_account():
     assert len(findings_fail) == 2
     assert all(f['Status'] == 'FAIL' for f in findings_fail)
     assert all(f['Severity'] == 'Critical' for f in findings_fail)
+
+
+def test_export_findings_formats(tmp_path):
+    import csv
+    import json
+
+    mock_findings = [
+        {
+            "Service": "S3",
+            "Region": "global",
+            "ResourceID": "sample-bucket",
+            "ResourceName": "sample-bucket",
+            "Status": "FAIL",
+            "Severity": "High",
+            "RemediationStatus": "Remediated",
+            "Finding": "Public Access Block is not enabled"
+        }
+    ]
+
+    # Test JSON export
+    json_path = str(tmp_path / "report.json")
+    export_findings(mock_findings, json_path, "json")
+    with open(json_path) as f:
+        loaded = json.load(f)
+    assert len(loaded) == 1
+    assert loaded[0]["ResourceID"] == "sample-bucket"
+
+    # Test CSV export
+    csv_path = str(tmp_path / "report.csv")
+    export_findings(mock_findings, csv_path, "csv")
+    with open(csv_path, newline='') as f:
+        reader = list(csv.DictReader(f))
+    assert len(reader) == 1
+    assert reader[0]["ResourceID"] == "sample-bucket"
+
+    # Test Table export
+    table_path = str(tmp_path / "report.txt")
+    export_findings(mock_findings, table_path, "table")
+    with open(table_path) as f:
+        content = f.read()
+    assert "sample-bucket" in content
+    assert "Public Access Block is not enabled" in content
+
+
+def test_lambda_handler_execution():
+    import json
+
+    # Mock auditor and methods
+    with patch("sentinel.AWSSentinelAuditor") as mock_auditor_cls:
+        mock_instance = mock_auditor_cls.return_value
+        mock_instance.get_active_regions.return_value = ["us-east-1"]
+        mock_instance.audit_s3.return_value = [{"Status": "PASS"}]
+        mock_instance.audit_iam.return_value = [{"Status": "FAIL"}]
+        mock_instance.audit_security_groups.return_value = []
+        mock_instance.audit_ebs.return_value = []
+        mock_instance.audit_kms.return_value = []
+        mock_instance.audit_cloudtrail.return_value = []
+
+        res = lambda_handler({}, None)
+        assert res["statusCode"] == 200
+        body = json.loads(res["body"])
+        assert body["total_findings"] == 2
+        assert body["failures"] == 1
+
+    # Test error handling
+    with patch("sentinel.AWSSentinelAuditor", side_effect=RuntimeError("Simulated AWS error")):
+        err_res = lambda_handler({}, None)
+        assert err_res["statusCode"] == 500
+        err_body = json.loads(err_res["body"])
+        assert "Simulated AWS error" in err_body["error"]
+
 
 
 
