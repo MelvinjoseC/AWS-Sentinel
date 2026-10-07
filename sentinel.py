@@ -1320,6 +1320,16 @@ def main():
         action="store_true",
         help="Output logs in structured JSON format"
     )
+    parser.add_argument(
+        "--fail-on-findings",
+        action="store_true",
+        help="Exit with non-zero status code (1) if any compliance failures (Status: FAIL) are found"
+    )
+    parser.add_argument(
+        "--fail-on-severity",
+        choices=["Critical", "High", "Medium", "Low"],
+        help="Exit with non-zero status code (1) if failures at or above the given severity level are found"
+    )
     args = parser.parse_args()
 
     setup_logging(args.log_level, json_format=args.json_logging)
@@ -1392,6 +1402,24 @@ def main():
         send_slack_notification(args.slack_webhook, all_findings)
     if args.teams_webhook:
         send_teams_notification(args.teams_webhook, all_findings)
+
+    if args.fail_on_findings and failed_count > 0:
+        logger.error(f"Audit completed with {failed_count} failure(s). Exiting with code 1 as --fail-on-findings is set.")
+        sys.exit(1)
+
+    if args.fail_on_severity:
+        severity_hierarchy = {"Critical": 4, "High": 3, "Medium": 2, "Low": 1}
+        threshold = severity_hierarchy.get(args.fail_on_severity, 3)
+        qualifying_failures = [
+            f for f in all_findings
+            if f["Status"] == "FAIL" and severity_hierarchy.get(f.get("Severity", "Low"), 0) >= threshold
+        ]
+        if qualifying_failures:
+            logger.error(
+                f"Audit found {len(qualifying_failures)} failure(s) at or above severity {args.fail_on_severity}. "
+                "Exiting with code 1."
+            )
+            sys.exit(1)
 
 def lambda_handler(event, context):
     """AWS Lambda entrypoint handler."""
