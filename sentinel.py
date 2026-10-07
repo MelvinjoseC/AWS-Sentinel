@@ -622,7 +622,82 @@ class AWSSentinelAuditor:
                         "Severity": "Medium",
                         "RemediationStatus": "N/A"
                     })
+        if self.config.get('iam', {}).get('check_root_account', False):
+            findings.extend(self.audit_iam_root_account())
         findings.extend(self.audit_iam_password_policy())
+        return self._apply_severity_overrides(findings)
+
+    def audit_iam_root_account(self):
+        """Audits the AWS root account for MFA enablement and active access keys."""
+        logger.info("Auditing IAM Root Account compliance...")
+        findings = []
+        try:
+            summary = self.iam_client.get_account_summary().get('SummaryMap', {})
+            # 1. Root Account MFA Check
+            root_mfa = summary.get('AccountMFAEnabled', 0) == 1
+            if root_mfa:
+                logger.info("✅ IAM Root Account: Secure (MFA is Enabled)")
+                findings.append({
+                    "Service": "IAM",
+                    "Region": "global",
+                    "ResourceID": "RootAccount",
+                    "ResourceName": "AWS Root Account",
+                    "Status": "PASS",
+                    "Finding": "Root account Multi-Factor Authentication (MFA) is enabled",
+                    "Severity": "Low",
+                    "RemediationStatus": "N/A"
+                })
+            else:
+                logger.warning("❌ IAM Root Account: CRITICAL - Root MFA is DISABLED!")
+                findings.append({
+                    "Service": "IAM",
+                    "Region": "global",
+                    "ResourceID": "RootAccount",
+                    "ResourceName": "AWS Root Account",
+                    "Status": "FAIL",
+                    "Finding": "Root account Multi-Factor Authentication (MFA) is disabled",
+                    "Severity": "Critical",
+                    "RemediationStatus": "Manual Intervention Required"
+                })
+
+            # 2. Root Account Access Keys Check
+            root_keys = summary.get('AccountAccessKeysPresent', 0) == 1
+            if not root_keys:
+                logger.info("✅ IAM Root Account: Secure (No active access keys)")
+                findings.append({
+                    "Service": "IAM",
+                    "Region": "global",
+                    "ResourceID": "RootAccount",
+                    "ResourceName": "AWS Root Account",
+                    "Status": "PASS",
+                    "Finding": "No access keys exist for the root account",
+                    "Severity": "Low",
+                    "RemediationStatus": "N/A"
+                })
+            else:
+                logger.warning("❌ IAM Root Account: CRITICAL - Root account has active access keys!")
+                findings.append({
+                    "Service": "IAM",
+                    "Region": "global",
+                    "ResourceID": "RootAccount",
+                    "ResourceName": "AWS Root Account",
+                    "Status": "FAIL",
+                    "Finding": "Root account has active access keys (delete immediately)",
+                    "Severity": "Critical",
+                    "RemediationStatus": "Manual Intervention Required"
+                })
+        except ClientError as e:
+            logger.error(f"Error checking IAM account summary for root account: {e}")
+            findings.append({
+                "Service": "IAM",
+                "Region": "global",
+                "ResourceID": "RootAccount",
+                "ResourceName": "AWS Root Account",
+                "Status": "ERROR",
+                "Finding": f"Failed to retrieve account summary: {e.response['Error']['Message']}",
+                "Severity": "Medium",
+                "RemediationStatus": "N/A"
+            })
         return self._apply_severity_overrides(findings)
 
     def audit_iam_password_policy(self):
