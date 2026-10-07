@@ -129,6 +129,24 @@ class AWSSentinelAuditor:
             logger.error(f"Failed to load configuration from {config_path}: {e}. Using defaults.")
         return default_config
 
+    def _apply_severity_overrides(self, findings):
+        """Applies configured severity overrides to findings based on Service.Finding or Finding text."""
+        overrides = self.config.get("severity_overrides", {})
+        if not overrides:
+            return findings
+
+        for finding in findings:
+            service = finding.get("Service", "")
+            finding_text = finding.get("Finding", "")
+            service_key = f"{service}.{finding_text}"
+
+            if service_key in overrides:
+                finding["Severity"] = overrides[service_key]
+            elif finding_text in overrides:
+                finding["Severity"] = overrides[finding_text]
+
+        return findings
+
     def get_active_regions(self):
         """Retrieves a list of all active AWS regions."""
         try:
@@ -353,7 +371,7 @@ class AWSSentinelAuditor:
                         "Severity": "Medium",
                         "RemediationStatus": "N/A"
                     })
-        return findings
+        return self._apply_severity_overrides(findings)
 
     def audit_iam(self, remediate=False):
         """Audits IAM users for MFA compliance using pagination. Remediation is manual."""
@@ -536,7 +554,7 @@ class AWSSentinelAuditor:
                         "RemediationStatus": "N/A"
                     })
         findings.extend(self.audit_iam_password_policy())
-        return findings
+        return self._apply_severity_overrides(findings)
 
     def audit_iam_password_policy(self):
         """Audits the account-wide IAM Password Policy against security baselines."""
@@ -620,7 +638,7 @@ class AWSSentinelAuditor:
                     "Severity": "Medium",
                     "RemediationStatus": "N/A"
                 })
-        return findings
+        return self._apply_severity_overrides(findings)
 
     def audit_security_groups(self, regions, remediate=False):
         """Audits EC2 Security Groups for open SSH (Port 22) across specified regions and remediates open rules."""
@@ -795,7 +813,7 @@ class AWSSentinelAuditor:
                                 "Severity": "Low",
                                 "RemediationStatus": "N/A"
                             })
-        return findings
+        return self._apply_severity_overrides(findings)
 
     def audit_ebs(self, regions, remediate=False):
         """Audits EBS configuration and volumes for encryption across specified regions."""
@@ -902,7 +920,7 @@ class AWSSentinelAuditor:
                             })
             except ClientError as e:
                 logger.error(f"Error describing EBS volumes in region {region}: {e}")
-        return findings
+        return self._apply_severity_overrides(findings)
 
     def audit_kms(self, regions, remediate=False):
         """Audits KMS Customer Managed Keys (CMKs) in specified regions for key rotation status."""
@@ -973,7 +991,7 @@ class AWSSentinelAuditor:
                                 })
                     except ClientError as e:
                         logger.error(f"Error checking KMS key '{key_id}' details/rotation status: {e}")
-        return findings
+        return self._apply_severity_overrides(findings)
 
     def audit_cloudtrail(self):
         """Audits CloudTrail logging configurations for at least one active multi-region trail."""
@@ -1041,7 +1059,7 @@ class AWSSentinelAuditor:
                 "RemediationStatus": "Manual Intervention Required"
             })
 
-        return findings
+        return self._apply_severity_overrides(findings)
 
 def print_table(findings):
     """Formats and prints findings as a text table."""
