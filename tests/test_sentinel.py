@@ -678,3 +678,57 @@ def test_severity_overrides_application():
     # Unchanged
     assert processed[2]["Severity"] == "High"
 
+
+@mock_aws
+def test_audit_security_groups_all_traffic_selective_revocation_and_no_false_pass():
+    ec2 = boto3.client('ec2', region_name='us-east-1')
+    vpc = ec2.create_vpc(CidrBlock='10.0.0.0/16')
+    vpc_id = vpc['Vpc']['VpcId']
+
+    sg = ec2.create_security_group(
+        GroupName='mixed-traffic-sg',
+        Description='Mixed CIDR all traffic',
+        VpcId=vpc_id
+    )
+    sg_id = sg['GroupId']
+
+    # Authorize all traffic for both public 0.0.0.0/0 AND private 10.0.0.0/16
+    ec2.authorize_security_group_ingress(
+        GroupId=sg_id,
+        IpPermissions=[
+            {
+                'IpProtocol': '-1',
+                'IpRanges': [
+                    {'CidrIp': '0.0.0.0/0'},
+                    {'CidrIp': '10.0.0.0/16'}
+                ]
+            }
+        ]
+    )
+
+    auditor = AWSSentinelAuditor(dry_run=False)
+    auditor.config['ec2']['ports_to_check'] = [
+        {"port": 22, "protocol": "tcp", "severity": "Critical"}
+    ]
+
+    findings = auditor.audit_security_groups(regions=['us-east-1'], remediate=False)
+    # Check that all traffic FAIL is reported
+    all_traffic_fail = [f for f in findings if f['ResourceID'] == sg_id and "allows all traffic" in f['Finding'].lower()]
+    assert len(all_traffic_fail) == 1
+    assert all_traffic_fail[0]['Status'] == 'FAIL'
+
+    # Check that port 22 is NOT falsely marked as PASS
+    port_22_pass = [f for f in findings if f['ResourceID'] == sg_id and "Port 22" in f['Finding'] and f['Status'] == 'PASS']
+    assert len(port_22_pass) == 0
+
+    # Remediate: should revoke 0.0.0.0/0 but keep 10.0.0.0/16
+    auditor.audit_security_groups(regions=['us-east-1'], remediate=True)
+
+    sg_details = ec2.describe_security_groups(GroupIds=[sg_id])['SecurityGroups'][0]
+    # The rule for 10.0.0.0/16 should still remain
+    assert len(sg_details['IpPermissions']) == 1
+    remaining_ranges = [ip['CidrIp'] for ip in sg_details['IpPermissions'][0].get('IpRanges', [])]
+    assert '10.0.0.0/16' in remaining_ranges
+    assert '0.0.0.0/0' not in remaining_ranges
+
+
