@@ -15,144 +15,154 @@ from sentinel import (
 @mock_aws
 def test_audit_s3_secure_and_insecure():
     # Setup mock S3
-    s3 = boto3.client('s3', region_name='us-east-1')
+    s3 = boto3.client("s3", region_name="us-east-1")
 
     # Bucket 1: no public access block (insecure)
-    s3.create_bucket(Bucket='insecure-bucket')
+    s3.create_bucket(Bucket="insecure-bucket")
 
     # Bucket 2: public access block (secure)
-    s3.create_bucket(Bucket='secure-bucket')
+    s3.create_bucket(Bucket="secure-bucket")
     s3.put_public_access_block(
-        Bucket='secure-bucket',
+        Bucket="secure-bucket",
         PublicAccessBlockConfiguration={
-            'BlockPublicAcls': True,
-            'IgnorePublicAcls': True,
-            'BlockPublicPolicy': True,
-            'RestrictPublicBuckets': True
-        }
+            "BlockPublicAcls": True,
+            "IgnorePublicAcls": True,
+            "BlockPublicPolicy": True,
+            "RestrictPublicBuckets": True,
+        },
     )
 
     auditor = AWSSentinelAuditor()
-    auditor.config['s3']['check_encryption'] = False
-    auditor.config['s3']['check_versioning'] = False
+    auditor.config["s3"]["check_encryption"] = False
+    auditor.config["s3"]["check_versioning"] = False
     findings = auditor.audit_s3(remediate=False)
 
     # Assertions
     assert len(findings) == 2
 
-    insecure_finding = next(f for f in findings if f['ResourceID'] == 'insecure-bucket')
-    assert insecure_finding['Status'] == 'FAIL'
-    assert insecure_finding['Severity'] == 'High'
+    insecure_finding = next(f for f in findings if f["ResourceID"] == "insecure-bucket")
+    assert insecure_finding["Status"] == "FAIL"
+    assert insecure_finding["Severity"] == "High"
 
-    secure_finding = next(f for f in findings if f['ResourceID'] == 'secure-bucket')
-    assert secure_finding['Status'] == 'PASS'
-    assert secure_finding['Severity'] == 'Low'
+    secure_finding = next(f for f in findings if f["ResourceID"] == "secure-bucket")
+    assert secure_finding["Status"] == "PASS"
+    assert secure_finding["Severity"] == "Low"
+
 
 @mock_aws
 def test_audit_s3_remediation():
-    s3 = boto3.client('s3', region_name='us-east-1')
-    s3.create_bucket(Bucket='remediate-bucket')
+    s3 = boto3.client("s3", region_name="us-east-1")
+    s3.create_bucket(Bucket="remediate-bucket")
 
     # Run audit with remediation
     auditor = AWSSentinelAuditor()
-    auditor.config['s3']['check_encryption'] = False
-    auditor.config['s3']['check_versioning'] = False
+    auditor.config["s3"]["check_encryption"] = False
+    auditor.config["s3"]["check_versioning"] = False
     findings = auditor.audit_s3(remediate=True)
 
     assert len(findings) == 1
-    assert findings[0]['Status'] == 'FAIL'
-    assert findings[0]['RemediationStatus'] == 'Remediated'
+    assert findings[0]["Status"] == "FAIL"
+    assert findings[0]["RemediationStatus"] == "Remediated"
 
     # Verify the bucket is now secure
-    pab = s3.get_public_access_block(Bucket='remediate-bucket')
-    assert pab['PublicAccessBlockConfiguration']['BlockPublicAcls'] is True
+    pab = s3.get_public_access_block(Bucket="remediate-bucket")
+    assert pab["PublicAccessBlockConfiguration"]["BlockPublicAcls"] is True
+
 
 @mock_aws
 def test_audit_s3_encryption_and_remediation():
-    s3 = boto3.client('s3', region_name='us-east-1')
+    s3 = boto3.client("s3", region_name="us-east-1")
 
-    s3.create_bucket(Bucket='no-encryption-bucket')
-    s3.create_bucket(Bucket='encrypted-bucket')
+    s3.create_bucket(Bucket="no-encryption-bucket")
+    s3.create_bucket(Bucket="encrypted-bucket")
     s3.put_bucket_encryption(
-        Bucket='encrypted-bucket',
+        Bucket="encrypted-bucket",
         ServerSideEncryptionConfiguration={
-            'Rules': [
-                {
-                    'ApplyServerSideEncryptionByDefault': {
-                        'SSEAlgorithm': 'AES256'
-                    }
-                }
-            ]
-        }
+            "Rules": [{"ApplyServerSideEncryptionByDefault": {"SSEAlgorithm": "AES256"}}]
+        },
     )
 
     auditor = AWSSentinelAuditor()
-    auditor.config['s3']['check_versioning'] = False
+    auditor.config["s3"]["check_versioning"] = False
 
     findings = auditor.audit_s3(remediate=False)
-    enc_findings = [f for f in findings if "encryption" in f['Finding'].lower()]
+    enc_findings = [f for f in findings if "encryption" in f["Finding"].lower()]
     assert len(enc_findings) == 2
 
-    no_enc_finding = next(f for f in enc_findings if f['ResourceID'] == 'no-encryption-bucket')
-    assert no_enc_finding['Status'] == 'FAIL'
+    no_enc_finding = next(f for f in enc_findings if f["ResourceID"] == "no-encryption-bucket")
+    assert no_enc_finding["Status"] == "FAIL"
 
-    enc_finding = next(f for f in enc_findings if f['ResourceID'] == 'encrypted-bucket')
-    assert enc_finding['Status'] == 'PASS'
+    enc_finding = next(f for f in enc_findings if f["ResourceID"] == "encrypted-bucket")
+    assert enc_finding["Status"] == "PASS"
 
     findings_rem = auditor.audit_s3(remediate=True)
-    no_enc_finding_rem = next(f for f in findings_rem if f['ResourceID'] == 'no-encryption-bucket' and "encryption" in f['Finding'].lower())
-    assert no_enc_finding_rem['RemediationStatus'] == 'Remediated'
+    no_enc_finding_rem = next(
+        f
+        for f in findings_rem
+        if f["ResourceID"] == "no-encryption-bucket" and "encryption" in f["Finding"].lower()
+    )
+    assert no_enc_finding_rem["RemediationStatus"] == "Remediated"
 
-    enc_config = s3.get_bucket_encryption(Bucket='no-encryption-bucket')
-    assert enc_config['ServerSideEncryptionConfiguration']['Rules'][0]['ApplyServerSideEncryptionByDefault']['SSEAlgorithm'] == 'AES256'
+    enc_config = s3.get_bucket_encryption(Bucket="no-encryption-bucket")
+    assert (
+        enc_config["ServerSideEncryptionConfiguration"]["Rules"][0][
+            "ApplyServerSideEncryptionByDefault"
+        ]["SSEAlgorithm"]
+        == "AES256"
+    )
+
 
 @mock_aws
 def test_audit_s3_versioning_and_remediation():
-    s3 = boto3.client('s3', region_name='us-east-1')
+    s3 = boto3.client("s3", region_name="us-east-1")
 
-    s3.create_bucket(Bucket='no-versioning-bucket')
-    s3.create_bucket(Bucket='versioned-bucket')
+    s3.create_bucket(Bucket="no-versioning-bucket")
+    s3.create_bucket(Bucket="versioned-bucket")
     s3.put_bucket_versioning(
-        Bucket='versioned-bucket',
-        VersioningConfiguration={'Status': 'Enabled'}
+        Bucket="versioned-bucket", VersioningConfiguration={"Status": "Enabled"}
     )
 
     auditor = AWSSentinelAuditor()
-    auditor.config['s3']['check_encryption'] = False
+    auditor.config["s3"]["check_encryption"] = False
 
     findings = auditor.audit_s3(remediate=False)
-    ver_findings = [f for f in findings if "versioning" in f['Finding'].lower()]
+    ver_findings = [f for f in findings if "versioning" in f["Finding"].lower()]
     assert len(ver_findings) == 2
 
-    no_ver_finding = next(f for f in ver_findings if f['ResourceID'] == 'no-versioning-bucket')
-    assert no_ver_finding['Status'] == 'FAIL'
+    no_ver_finding = next(f for f in ver_findings if f["ResourceID"] == "no-versioning-bucket")
+    assert no_ver_finding["Status"] == "FAIL"
 
-    ver_finding = next(f for f in ver_findings if f['ResourceID'] == 'versioned-bucket')
-    assert ver_finding['Status'] == 'PASS'
+    ver_finding = next(f for f in ver_findings if f["ResourceID"] == "versioned-bucket")
+    assert ver_finding["Status"] == "PASS"
 
     findings_rem = auditor.audit_s3(remediate=True)
-    no_ver_finding_rem = next(f for f in findings_rem if f['ResourceID'] == 'no-versioning-bucket' and "versioning" in f['Finding'].lower())
-    assert no_ver_finding_rem['RemediationStatus'] == 'Remediated'
+    no_ver_finding_rem = next(
+        f
+        for f in findings_rem
+        if f["ResourceID"] == "no-versioning-bucket" and "versioning" in f["Finding"].lower()
+    )
+    assert no_ver_finding_rem["RemediationStatus"] == "Remediated"
 
-    ver_status = s3.get_bucket_versioning(Bucket='no-versioning-bucket')
-    assert ver_status['Status'] == 'Enabled'
+    ver_status = s3.get_bucket_versioning(Bucket="no-versioning-bucket")
+    assert ver_status["Status"] == "Enabled"
+
 
 @mock_aws
 def test_audit_iam():
-    iam = boto3.client('iam')
+    iam = boto3.client("iam")
 
     # User 1: No MFA (insecure)
-    iam.create_user(UserName='insecure-user')
+    iam.create_user(UserName="insecure-user")
 
     # User 2: With MFA (secure)
-    iam.create_user(UserName='secure-user')
-    mfa_response = iam.create_virtual_mfa_device(VirtualMFADeviceName='secure-user-mfa')
-    serial = mfa_response['VirtualMFADevice']['SerialNumber']
+    iam.create_user(UserName="secure-user")
+    mfa_response = iam.create_virtual_mfa_device(VirtualMFADeviceName="secure-user-mfa")
+    serial = mfa_response["VirtualMFADevice"]["SerialNumber"]
     iam.enable_mfa_device(
-        UserName='secure-user',
+        UserName="secure-user",
         SerialNumber=serial,
-        AuthenticationCode1='123456',
-        AuthenticationCode2='789012'
+        AuthenticationCode1="123456",
+        AuthenticationCode2="789012",
     )
 
     # Setup compliant password policy
@@ -161,7 +171,7 @@ def test_audit_iam():
         RequireSymbols=True,
         RequireNumbers=True,
         RequireUppercaseCharacters=True,
-        RequireLowercaseCharacters=True
+        RequireLowercaseCharacters=True,
     )
 
     auditor = AWSSentinelAuditor()
@@ -169,196 +179,233 @@ def test_audit_iam():
 
     assert len(findings) == 3
 
-    insecure_finding = next(f for f in findings if f['ResourceName'] == 'insecure-user')
-    assert insecure_finding['Status'] == 'FAIL'
+    insecure_finding = next(f for f in findings if f["ResourceName"] == "insecure-user")
+    assert insecure_finding["Status"] == "FAIL"
 
-    secure_finding = next(f for f in findings if f['ResourceName'] == 'secure-user')
-    assert secure_finding['Status'] == 'PASS'
+    secure_finding = next(f for f in findings if f["ResourceName"] == "secure-user")
+    assert secure_finding["Status"] == "PASS"
 
-    pwd_finding = next(f for f in findings if f['ResourceID'] == 'AccountPasswordPolicy')
-    assert pwd_finding['Status'] == 'PASS'
+    pwd_finding = next(f for f in findings if f["ResourceID"] == "AccountPasswordPolicy")
+    assert pwd_finding["Status"] == "PASS"
+
 
 @mock_aws
 def test_audit_iam_access_key_age():
-    iam = boto3.client('iam')
-    username = 'key-test-user'
+    iam = boto3.client("iam")
+    username = "key-test-user"
     iam.create_user(UserName=username)
 
     key_response = iam.create_access_key(UserName=username)
-    key_id = key_response['AccessKey']['AccessKeyId']
+    key_id = key_response["AccessKey"]["AccessKeyId"]
 
     # Non-compliant key age
     auditor = AWSSentinelAuditor()
-    auditor.config['iam']['max_access_key_age_days'] = -1
-    with patch.object(auditor, 'audit_iam_password_policy', return_value=[]):
+    auditor.config["iam"]["max_access_key_age_days"] = -1
+    with patch.object(auditor, "audit_iam_password_policy", return_value=[]):
         findings = auditor.audit_iam(remediate=False)
-        key_findings = [f for f in findings if f['ResourceID'] == key_id and "older than" in f['Finding'].lower()]
+        key_findings = [
+            f
+            for f in findings
+            if f["ResourceID"] == key_id and "older than" in f["Finding"].lower()
+        ]
         assert len(key_findings) == 1
-        assert key_findings[0]['Status'] == 'FAIL'
-        assert "older than" in key_findings[0]['Finding'].lower()
+        assert key_findings[0]["Status"] == "FAIL"
+        assert "older than" in key_findings[0]["Finding"].lower()
 
     # Compliant key age
     auditor2 = AWSSentinelAuditor()
-    auditor2.config['iam']['max_access_key_age_days'] = 90
-    with patch.object(auditor2, 'audit_iam_password_policy', return_value=[]):
+    auditor2.config["iam"]["max_access_key_age_days"] = 90
+    with patch.object(auditor2, "audit_iam_password_policy", return_value=[]):
         findings2 = auditor2.audit_iam(remediate=False)
-        key_findings2 = [f for f in findings2 if f['ResourceID'] == key_id and "active and compliant" in f['Finding'].lower()]
+        key_findings2 = [
+            f
+            for f in findings2
+            if f["ResourceID"] == key_id and "active and compliant" in f["Finding"].lower()
+        ]
         assert len(key_findings2) == 1
-        assert key_findings2[0]['Status'] == 'PASS'
+        assert key_findings2[0]["Status"] == "PASS"
+
 
 @mock_aws
 def test_audit_iam_unused_access_keys():
-    iam = boto3.client('iam')
-    username = 'unused-key-user'
+    iam = boto3.client("iam")
+    username = "unused-key-user"
     iam.create_user(UserName=username)
     key_response = iam.create_access_key(UserName=username)
-    key_id = key_response['AccessKey']['AccessKeyId']
+    key_id = key_response["AccessKey"]["AccessKeyId"]
 
     # Test unused key trigger via age of key (never used)
     auditor = AWSSentinelAuditor()
-    auditor.config['iam']['max_unused_access_key_days'] = -1
-    with patch.object(auditor, 'audit_iam_password_policy', return_value=[]):
+    auditor.config["iam"]["max_unused_access_key_days"] = -1
+    with patch.object(auditor, "audit_iam_password_policy", return_value=[]):
         findings = auditor.audit_iam(remediate=False)
-        unused_findings = [f for f in findings if f['ResourceID'] == key_id and "never been used" in f['Finding'].lower()]
+        unused_findings = [
+            f
+            for f in findings
+            if f["ResourceID"] == key_id and "never been used" in f["Finding"].lower()
+        ]
         assert len(unused_findings) == 1
-        assert unused_findings[0]['Status'] == 'FAIL'
+        assert unused_findings[0]["Status"] == "FAIL"
 
     # Compliant unused key trigger
     auditor2 = AWSSentinelAuditor()
-    auditor2.config['iam']['max_unused_access_key_days'] = 90
-    with patch.object(auditor2, 'audit_iam_password_policy', return_value=[]):
+    auditor2.config["iam"]["max_unused_access_key_days"] = 90
+    with patch.object(auditor2, "audit_iam_password_policy", return_value=[]):
         findings2 = auditor2.audit_iam(remediate=False)
-        unused_findings2 = [f for f in findings2 if f['ResourceID'] == key_id and "usage is compliant" in f['Finding'].lower()]
+        unused_findings2 = [
+            f
+            for f in findings2
+            if f["ResourceID"] == key_id and "usage is compliant" in f["Finding"].lower()
+        ]
         assert len(unused_findings2) == 1
-        assert unused_findings2[0]['Status'] == 'PASS'
+        assert unused_findings2[0]["Status"] == "PASS"
+
 
 @mock_aws
 def test_audit_iam_unused_access_keys_remediation():
-    iam = boto3.client('iam')
-    username = 'unused-remediate-user'
+    iam = boto3.client("iam")
+    username = "unused-remediate-user"
     iam.create_user(UserName=username)
     key_response = iam.create_access_key(UserName=username)
-    key_id = key_response['AccessKey']['AccessKeyId']
+    key_id = key_response["AccessKey"]["AccessKeyId"]
 
     auditor = AWSSentinelAuditor()
-    auditor.config['iam']['max_unused_access_key_days'] = -1
+    auditor.config["iam"]["max_unused_access_key_days"] = -1
 
-    with patch.object(auditor, 'audit_iam_password_policy', return_value=[]):
+    with patch.object(auditor, "audit_iam_password_policy", return_value=[]):
         # Remediate = True
         findings = auditor.audit_iam(remediate=True)
-        unused_finding = next(f for f in findings if f['ResourceID'] == key_id and "never been used" in f['Finding'].lower())
-        assert unused_finding['Status'] == 'FAIL'
-        assert unused_finding['RemediationStatus'] == 'Remediated (Deactivated)'
+        unused_finding = next(
+            f
+            for f in findings
+            if f["ResourceID"] == key_id and "never been used" in f["Finding"].lower()
+        )
+        assert unused_finding["Status"] == "FAIL"
+        assert unused_finding["RemediationStatus"] == "Remediated (Deactivated)"
 
         # Verify the key is now Inactive
-        keys = iam.list_access_keys(UserName=username)['AccessKeyMetadata']
-        key_metadata = next(k for k in keys if k['AccessKeyId'] == key_id)
-        assert key_metadata['Status'] == 'Inactive'
+        keys = iam.list_access_keys(UserName=username)["AccessKeyMetadata"]
+        key_metadata = next(k for k in keys if k["AccessKeyId"] == key_id)
+        assert key_metadata["Status"] == "Inactive"
+
 
 @mock_aws
 def test_audit_iam_password_policy_non_compliant():
-    iam = boto3.client('iam')
+    iam = boto3.client("iam")
 
     iam.update_account_password_policy(
         MinimumPasswordLength=6,
         RequireSymbols=False,
         RequireNumbers=True,
         RequireUppercaseCharacters=True,
-        RequireLowercaseCharacters=True
+        RequireLowercaseCharacters=True,
     )
 
     auditor = AWSSentinelAuditor()
     findings = auditor.audit_iam_password_policy()
     assert len(findings) == 1
-    assert findings[0]['Status'] == 'FAIL'
-    assert "non-compliant" in findings[0]['Finding'].lower()
+    assert findings[0]["Status"] == "FAIL"
+    assert "non-compliant" in findings[0]["Finding"].lower()
+
 
 @mock_aws
 def test_audit_iam_password_policy_missing():
     auditor = AWSSentinelAuditor()
     findings = auditor.audit_iam_password_policy()
     assert len(findings) == 1
-    assert findings[0]['Status'] == 'FAIL'
-    assert "no iam password policy is defined" in findings[0]['Finding'].lower()
+    assert findings[0]["Status"] == "FAIL"
+    assert "no iam password policy is defined" in findings[0]["Finding"].lower()
+
 
 @mock_aws
 def test_audit_security_groups_and_remediation():
-    ec2 = boto3.client('ec2', region_name='us-east-1')
+    ec2 = boto3.client("ec2", region_name="us-east-1")
 
     # Create VPC
-    vpc = ec2.create_vpc(CidrBlock='10.0.0.0/16')
-    vpc_id = vpc['Vpc']['VpcId']
+    vpc = ec2.create_vpc(CidrBlock="10.0.0.0/16")
+    vpc_id = vpc["Vpc"]["VpcId"]
 
     # Insecure security group (open SSH)
     sg_insecure = ec2.create_security_group(
-        GroupName='insecure-sg',
-        Description='Allow SSH from everywhere',
-        VpcId=vpc_id
+        GroupName="insecure-sg", Description="Allow SSH from everywhere", VpcId=vpc_id
     )
-    sg_insecure_id = sg_insecure['GroupId']
+    sg_insecure_id = sg_insecure["GroupId"]
 
     ec2.authorize_security_group_ingress(
         GroupId=sg_insecure_id,
         IpPermissions=[
             {
-                'IpProtocol': 'tcp',
-                'FromPort': 22,
-                'ToPort': 22,
-                'IpRanges': [{'CidrIp': '0.0.0.0/0'}]
+                "IpProtocol": "tcp",
+                "FromPort": 22,
+                "ToPort": 22,
+                "IpRanges": [{"CidrIp": "0.0.0.0/0"}],
             }
-        ]
+        ],
     )
 
     # Secure security group
-    ec2.create_security_group(
-        GroupName='secure-sg',
-        Description='No public SSH',
-        VpcId=vpc_id
-    )
+    ec2.create_security_group(GroupName="secure-sg", Description="No public SSH", VpcId=vpc_id)
 
     # Audit EC2 SGs (dry-run remediation)
     auditor = AWSSentinelAuditor(dry_run=True)
-    findings = auditor.audit_security_groups(regions=['us-east-1'], remediate=True)
+    findings = auditor.audit_security_groups(regions=["us-east-1"], remediate=True)
 
-    insecure_finding = next(f for f in findings if f['ResourceID'] == sg_insecure_id)
-    assert insecure_finding['Status'] == 'FAIL'
-    assert insecure_finding['RemediationStatus'] == 'Dry-Run: Revoke Port 22 open to public'
+    insecure_finding = next(f for f in findings if f["ResourceID"] == sg_insecure_id)
+    assert insecure_finding["Status"] == "FAIL"
+    assert insecure_finding["RemediationStatus"] == "Dry-Run: Revoke Port 22 open to public"
 
     # Audit and Remediate (actually revoke)
     auditor_real = AWSSentinelAuditor(dry_run=False)
-    findings_real = auditor_real.audit_security_groups(regions=['us-east-1'], remediate=True)
+    findings_real = auditor_real.audit_security_groups(regions=["us-east-1"], remediate=True)
 
-    insecure_finding_real = next(f for f in findings_real if f['ResourceID'] == sg_insecure_id)
-    assert insecure_finding_real['Status'] == 'FAIL'
-    assert insecure_finding_real['RemediationStatus'] == 'Remediated'
+    insecure_finding_real = next(f for f in findings_real if f["ResourceID"] == sg_insecure_id)
+    assert insecure_finding_real["Status"] == "FAIL"
+    assert insecure_finding_real["RemediationStatus"] == "Remediated"
 
     # Re-describe security groups and verify rule is revoked
-    sg_details = ec2.describe_security_groups(GroupIds=[sg_insecure_id])['SecurityGroups'][0]
-    rules = sg_details['IpPermissions']
+    sg_details = ec2.describe_security_groups(GroupIds=[sg_insecure_id])["SecurityGroups"][0]
+    rules = sg_details["IpPermissions"]
     port_22_exposed = False
     for rule in rules:
-        if rule.get('FromPort') == 22:
-            for ip in rule.get('IpRanges', []):
-                if ip.get('CidrIp') == '0.0.0.0/0':
+        if rule.get("FromPort") == 22:
+            for ip in rule.get("IpRanges", []):
+                if ip.get("CidrIp") == "0.0.0.0/0":
                     port_22_exposed = True
     assert not port_22_exposed
 
 
 def test_send_slack_notification_no_failures():
     findings = [
-        {"Service": "S3", "Status": "PASS", "ResourceID": "b1", "Region": "global", "Finding": "Secure", "Severity": "Low", "RemediationStatus": "N/A"}
+        {
+            "Service": "S3",
+            "Status": "PASS",
+            "ResourceID": "b1",
+            "Region": "global",
+            "Finding": "Secure",
+            "Severity": "Low",
+            "RemediationStatus": "N/A",
+        }
     ]
-    with patch('urllib.request.urlopen') as mock_urlopen:
+    with patch("urllib.request.urlopen") as mock_urlopen:
         send_slack_notification("http://mock-webhook", findings)
         mock_urlopen.assert_not_called()
+
 
 def test_send_slack_notification_with_failures():
     findings = [
-        {"Service": "S3", "Status": "FAIL", "ResourceID": "b1", "Region": "global", "Finding": "Insecure", "Severity": "High", "RemediationStatus": "None"}
+        {
+            "Service": "S3",
+            "Status": "FAIL",
+            "ResourceID": "b1",
+            "Region": "global",
+            "Finding": "Insecure",
+            "Severity": "High",
+            "RemediationStatus": "None",
+        }
     ]
     mock_response = MagicMock()
     mock_response.status = 200
-    with patch('urllib.request.urlopen', return_value=mock_response) as mock_urlopen:
+    with patch("urllib.request.urlopen", return_value=mock_response) as mock_urlopen:
         send_slack_notification("http://mock-webhook", findings)
         mock_urlopen.assert_called_once()
         args, kwargs = mock_urlopen.call_args
@@ -366,21 +413,39 @@ def test_send_slack_notification_with_failures():
         assert req.full_url == "http://mock-webhook"
         assert req.get_header("Content-type") == "application/json"
 
+
 def test_send_teams_notification_no_failures():
     findings = [
-        {"Service": "S3", "Status": "PASS", "ResourceID": "b1", "Region": "global", "Finding": "Secure", "Severity": "Low", "RemediationStatus": "N/A"}
+        {
+            "Service": "S3",
+            "Status": "PASS",
+            "ResourceID": "b1",
+            "Region": "global",
+            "Finding": "Secure",
+            "Severity": "Low",
+            "RemediationStatus": "N/A",
+        }
     ]
-    with patch('urllib.request.urlopen') as mock_urlopen:
+    with patch("urllib.request.urlopen") as mock_urlopen:
         send_teams_notification("http://mock-webhook", findings)
         mock_urlopen.assert_not_called()
 
+
 def test_send_teams_notification_with_failures():
     findings = [
-        {"Service": "S3", "Status": "FAIL", "ResourceID": "b1", "Region": "global", "Finding": "Insecure", "Severity": "High", "RemediationStatus": "None"}
+        {
+            "Service": "S3",
+            "Status": "FAIL",
+            "ResourceID": "b1",
+            "Region": "global",
+            "Finding": "Insecure",
+            "Severity": "High",
+            "RemediationStatus": "None",
+        }
     ]
     mock_response = MagicMock()
     mock_response.status = 200
-    with patch('urllib.request.urlopen', return_value=mock_response) as mock_urlopen:
+    with patch("urllib.request.urlopen", return_value=mock_response) as mock_urlopen:
         send_teams_notification("http://mock-webhook", findings)
         mock_urlopen.assert_called_once()
         args, kwargs = mock_urlopen.call_args
@@ -388,59 +453,59 @@ def test_send_teams_notification_with_failures():
         assert req.full_url == "http://mock-webhook"
         assert req.get_header("Content-type") == "application/json"
 
+
 @mock_aws
 def test_audit_security_groups_custom_ports():
-    ec2 = boto3.client('ec2', region_name='us-east-1')
-    vpc = ec2.create_vpc(CidrBlock='10.0.0.0/16')
-    vpc_id = vpc['Vpc']['VpcId']
+    ec2 = boto3.client("ec2", region_name="us-east-1")
+    vpc = ec2.create_vpc(CidrBlock="10.0.0.0/16")
+    vpc_id = vpc["Vpc"]["VpcId"]
 
     sg = ec2.create_security_group(
-        GroupName='custom-sg',
-        Description='Allow RDP and FTP',
-        VpcId=vpc_id
+        GroupName="custom-sg", Description="Allow RDP and FTP", VpcId=vpc_id
     )
-    sg_id = sg['GroupId']
+    sg_id = sg["GroupId"]
 
     ec2.authorize_security_group_ingress(
         GroupId=sg_id,
         IpPermissions=[
             {
-                'IpProtocol': 'tcp',
-                'FromPort': 3389,
-                'ToPort': 3389,
-                'IpRanges': [{'CidrIp': '0.0.0.0/0'}]
+                "IpProtocol": "tcp",
+                "FromPort": 3389,
+                "ToPort": 3389,
+                "IpRanges": [{"CidrIp": "0.0.0.0/0"}],
             },
             {
-                'IpProtocol': 'tcp',
-                'FromPort': 21,
-                'ToPort': 21,
-                'IpRanges': [{'CidrIp': '0.0.0.0/0'}]
-            }
-        ]
+                "IpProtocol": "tcp",
+                "FromPort": 21,
+                "ToPort": 21,
+                "IpRanges": [{"CidrIp": "0.0.0.0/0"}],
+            },
+        ],
     )
 
     auditor = AWSSentinelAuditor()
-    auditor.config['ec2']['ports_to_check'] = [
+    auditor.config["ec2"]["ports_to_check"] = [
         {"port": 3389, "protocol": "tcp", "severity": "Critical"},
         {"port": 21, "protocol": "tcp", "severity": "High"},
-        {"port": 80, "protocol": "tcp", "severity": "Medium"}
+        {"port": 80, "protocol": "tcp", "severity": "Medium"},
     ]
 
-    findings = auditor.audit_security_groups(regions=['us-east-1'], remediate=False)
-    custom_findings = [f for f in findings if f['ResourceID'] == sg_id]
+    findings = auditor.audit_security_groups(regions=["us-east-1"], remediate=False)
+    custom_findings = [f for f in findings if f["ResourceID"] == sg_id]
 
     assert len(custom_findings) == 3
 
-    rdp_finding = next(f for f in custom_findings if "3389" in f['Finding'])
-    assert rdp_finding['Status'] == 'FAIL'
-    assert rdp_finding['Severity'] == 'Critical'
+    rdp_finding = next(f for f in custom_findings if "3389" in f["Finding"])
+    assert rdp_finding["Status"] == "FAIL"
+    assert rdp_finding["Severity"] == "Critical"
 
-    ftp_finding = next(f for f in custom_findings if "21" in f['Finding'])
-    assert ftp_finding['Status'] == 'FAIL'
-    assert ftp_finding['Severity'] == 'High'
+    ftp_finding = next(f for f in custom_findings if "21" in f["Finding"])
+    assert ftp_finding["Status"] == "FAIL"
+    assert ftp_finding["Severity"] == "High"
 
-    http_finding = next(f for f in custom_findings if "80" in f['Finding'])
-    assert http_finding['Status'] == 'PASS'
+    http_finding = next(f for f in custom_findings if "80" in f["Finding"])
+    assert http_finding["Status"] == "PASS"
+
 
 def test_json_logging_formatter():
     import io
@@ -473,165 +538,162 @@ def test_json_logging_formatter():
 
     log_content = log_capture.getvalue().strip()
     parsed = json.loads(log_content)
-    assert parsed['logger'] == 'test-json-logger'
-    assert parsed['level'] == 'INFO'
-    assert parsed['message'] == 'This is a test message'
-    assert 'timestamp' in parsed
+    assert parsed["logger"] == "test-json-logger"
+    assert parsed["level"] == "INFO"
+    assert parsed["message"] == "This is a test message"
+    assert "timestamp" in parsed
+
 
 @mock_aws
 def test_audit_ebs_compliance_and_remediation():
-    ec2 = boto3.client('ec2', region_name='us-east-1')
+    ec2 = boto3.client("ec2", region_name="us-east-1")
 
     # Create unencrypted and encrypted volumes
-    vol_unencrypted = ec2.create_volume(
-        AvailabilityZone='us-east-1a',
-        Size=10,
-        Encrypted=False
-    )
-    vol_id_unenc = vol_unencrypted['VolumeId']
+    vol_unencrypted = ec2.create_volume(AvailabilityZone="us-east-1a", Size=10, Encrypted=False)
+    vol_id_unenc = vol_unencrypted["VolumeId"]
 
-    vol_encrypted = ec2.create_volume(
-        AvailabilityZone='us-east-1a',
-        Size=10,
-        Encrypted=True
-    )
-    vol_id_enc = vol_encrypted['VolumeId']
+    vol_encrypted = ec2.create_volume(AvailabilityZone="us-east-1a", Size=10, Encrypted=True)
+    vol_id_enc = vol_encrypted["VolumeId"]
 
     auditor = AWSSentinelAuditor(dry_run=False)
-    findings = auditor.audit_ebs(regions=['us-east-1'], remediate=False)
+    findings = auditor.audit_ebs(regions=["us-east-1"], remediate=False)
 
-    ebs_def_finding = next(f for f in findings if f['ResourceID'] == 'EbsEncryptionByDefault-us-east-1')
-    assert ebs_def_finding['Status'] == 'FAIL'
-    assert ebs_def_finding['RemediationStatus'] == 'None (Remediation not requested)'
+    ebs_def_finding = next(
+        f for f in findings if f["ResourceID"] == "EbsEncryptionByDefault-us-east-1"
+    )
+    assert ebs_def_finding["Status"] == "FAIL"
+    assert ebs_def_finding["RemediationStatus"] == "None (Remediation not requested)"
 
-    unenc_finding = next(f for f in findings if f['ResourceID'] == vol_id_unenc)
-    assert unenc_finding['Status'] == 'FAIL'
+    unenc_finding = next(f for f in findings if f["ResourceID"] == vol_id_unenc)
+    assert unenc_finding["Status"] == "FAIL"
 
-    enc_finding = next(f for f in findings if f['ResourceID'] == vol_id_enc)
-    assert enc_finding['Status'] == 'PASS'
+    enc_finding = next(f for f in findings if f["ResourceID"] == vol_id_enc)
+    assert enc_finding["Status"] == "PASS"
 
     # Test remediation for EBS Encryption by Default
-    findings_remediate = auditor.audit_ebs(regions=['us-east-1'], remediate=True)
-    ebs_def_rem = next(f for f in findings_remediate if f['ResourceID'] == 'EbsEncryptionByDefault-us-east-1')
-    assert ebs_def_rem['Status'] == 'FAIL'
-    assert ebs_def_rem['RemediationStatus'] == 'Remediated'
+    findings_remediate = auditor.audit_ebs(regions=["us-east-1"], remediate=True)
+    ebs_def_rem = next(
+        f for f in findings_remediate if f["ResourceID"] == "EbsEncryptionByDefault-us-east-1"
+    )
+    assert ebs_def_rem["Status"] == "FAIL"
+    assert ebs_def_rem["RemediationStatus"] == "Remediated"
 
     # Verify EBS encryption by default is now enabled
     status = ec2.get_ebs_encryption_by_default()
-    assert status['EbsEncryptionByDefault'] is True
+    assert status["EbsEncryptionByDefault"] is True
+
 
 @mock_aws
 def test_audit_kms_rotation_and_remediation():
-    kms = boto3.client('kms', region_name='us-east-1')
+    kms = boto3.client("kms", region_name="us-east-1")
 
     # Create a Customer Managed Key (CMK)
-    key = kms.create_key(Description='Test CMK Key')
-    key_id = key['KeyMetadata']['KeyId']
+    key = kms.create_key(Description="Test CMK Key")
+    key_id = key["KeyMetadata"]["KeyId"]
 
     # Check compliance (rotation disabled by default)
     auditor = AWSSentinelAuditor(dry_run=False)
-    findings = auditor.audit_kms(regions=['us-east-1'], remediate=False)
+    findings = auditor.audit_kms(regions=["us-east-1"], remediate=False)
 
-    kms_finding = next(f for f in findings if f['ResourceID'] == key_id)
-    assert kms_finding['Status'] == 'FAIL'
-    assert kms_finding['RemediationStatus'] == 'None (Remediation not requested)'
+    kms_finding = next(f for f in findings if f["ResourceID"] == key_id)
+    assert kms_finding["Status"] == "FAIL"
+    assert kms_finding["RemediationStatus"] == "None (Remediation not requested)"
 
     # Remediate to enable key rotation
-    findings_remediate = auditor.audit_kms(regions=['us-east-1'], remediate=True)
-    kms_finding_rem = next(f for f in findings_remediate if f['ResourceID'] == key_id)
-    assert kms_finding_rem['Status'] == 'FAIL'
-    assert kms_finding_rem['RemediationStatus'] == 'Remediated'
+    findings_remediate = auditor.audit_kms(regions=["us-east-1"], remediate=True)
+    kms_finding_rem = next(f for f in findings_remediate if f["ResourceID"] == key_id)
+    assert kms_finding_rem["Status"] == "FAIL"
+    assert kms_finding_rem["RemediationStatus"] == "Remediated"
 
     # Verify key rotation is now enabled in KMS
     status = kms.get_key_rotation_status(KeyId=key_id)
-    assert status['KeyRotationEnabled'] is True
+    assert status["KeyRotationEnabled"] is True
+
 
 @mock_aws
 def test_audit_cloudtrail_compliance():
-    s3 = boto3.client('s3', region_name='us-east-1')
-    s3.create_bucket(Bucket='mock-bucket')
-    ct = boto3.client('cloudtrail', region_name='us-east-1')
+    s3 = boto3.client("s3", region_name="us-east-1")
+    s3.create_bucket(Bucket="mock-bucket")
+    ct = boto3.client("cloudtrail", region_name="us-east-1")
 
     # Initially no trails exist
     auditor = AWSSentinelAuditor()
     findings = auditor.audit_cloudtrail()
     assert len(findings) == 1
-    assert findings[0]['Status'] == 'FAIL'
-    assert "no active multi-region" in findings[0]['Finding'].lower()
+    assert findings[0]["Status"] == "FAIL"
+    assert "no active multi-region" in findings[0]["Finding"].lower()
 
     # Create a non-compliant trail (single region, not logging)
     ct.create_trail(
-        Name='single-region-trail',
-        S3BucketName='mock-bucket',
-        IsMultiRegionTrail=False
+        Name="single-region-trail", S3BucketName="mock-bucket", IsMultiRegionTrail=False
     )
     findings = auditor.audit_cloudtrail()
     assert len(findings) == 1
-    assert findings[0]['Status'] == 'FAIL'
+    assert findings[0]["Status"] == "FAIL"
 
     # Create a multi-region trail but not logging
     ct.create_trail(
-        Name='multi-region-inactive-trail',
-        S3BucketName='mock-bucket',
-        IsMultiRegionTrail=True
+        Name="multi-region-inactive-trail", S3BucketName="mock-bucket", IsMultiRegionTrail=True
     )
     findings = auditor.audit_cloudtrail()
     assert len(findings) == 1
-    assert findings[0]['Status'] == 'FAIL'
+    assert findings[0]["Status"] == "FAIL"
 
     # Start logging on the multi-region trail (makes it compliant)
-    ct.start_logging(Name='multi-region-inactive-trail')
+    ct.start_logging(Name="multi-region-inactive-trail")
     findings = auditor.audit_cloudtrail()
     assert len(findings) == 1
-    assert findings[0]['Status'] == 'PASS'
-    assert "compliant active multi-region" in findings[0]['Finding'].lower()
+    assert findings[0]["Status"] == "PASS"
+    assert "compliant active multi-region" in findings[0]["Finding"].lower()
+
 
 @mock_aws
 def test_audit_security_groups_all_traffic():
-    ec2 = boto3.client('ec2', region_name='us-east-1')
-    vpc = ec2.create_vpc(CidrBlock='10.0.0.0/16')
-    vpc_id = vpc['Vpc']['VpcId']
+    ec2 = boto3.client("ec2", region_name="us-east-1")
+    vpc = ec2.create_vpc(CidrBlock="10.0.0.0/16")
+    vpc_id = vpc["Vpc"]["VpcId"]
 
     # Security Group allowing all protocols from 0.0.0.0/0
     sg = ec2.create_security_group(
-        GroupName='all-traffic-sg',
-        Description='Allow all traffic',
-        VpcId=vpc_id
+        GroupName="all-traffic-sg", Description="Allow all traffic", VpcId=vpc_id
     )
-    sg_id = sg['GroupId']
+    sg_id = sg["GroupId"]
 
     ec2.authorize_security_group_ingress(
-        GroupId=sg_id,
-        IpPermissions=[
-            {
-                'IpProtocol': '-1',
-                'IpRanges': [{'CidrIp': '0.0.0.0/0'}]
-            }
-        ]
+        GroupId=sg_id, IpPermissions=[{"IpProtocol": "-1", "IpRanges": [{"CidrIp": "0.0.0.0/0"}]}]
     )
 
     auditor = AWSSentinelAuditor(dry_run=False)
-    findings = auditor.audit_security_groups(regions=['us-east-1'], remediate=False)
+    findings = auditor.audit_security_groups(regions=["us-east-1"], remediate=False)
 
-    all_traffic_finding = next(f for f in findings if f['ResourceID'] == sg_id and "allows all traffic" in f['Finding'].lower())
-    assert all_traffic_finding['Status'] == 'FAIL'
-    assert all_traffic_finding['Severity'] == 'Critical'
+    all_traffic_finding = next(
+        f
+        for f in findings
+        if f["ResourceID"] == sg_id and "allows all traffic" in f["Finding"].lower()
+    )
+    assert all_traffic_finding["Status"] == "FAIL"
+    assert all_traffic_finding["Severity"] == "Critical"
 
     # Remediate to revoke
-    findings_rem = auditor.audit_security_groups(regions=['us-east-1'], remediate=True)
-    all_traffic_rem = next(f for f in findings_rem if f['ResourceID'] == sg_id and "allows all traffic" in f['Finding'].lower())
-    assert all_traffic_rem['RemediationStatus'] == 'Remediated'
+    findings_rem = auditor.audit_security_groups(regions=["us-east-1"], remediate=True)
+    all_traffic_rem = next(
+        f
+        for f in findings_rem
+        if f["ResourceID"] == sg_id and "allows all traffic" in f["Finding"].lower()
+    )
+    assert all_traffic_rem["RemediationStatus"] == "Remediated"
 
     # Verify rule is revoked in ec2
-    sg_details = ec2.describe_security_groups(GroupIds=[sg_id])['SecurityGroups'][0]
-    assert len(sg_details['IpPermissions']) == 0
+    sg_details = ec2.describe_security_groups(GroupIds=[sg_id])["SecurityGroups"][0]
+    assert len(sg_details["IpPermissions"]) == 0
+
 
 @mock_aws
 def test_audit_assume_role_session_setup():
     # Initialize the auditor specifying an assume_role_arn
     auditor = AWSSentinelAuditor(
         assume_role_arn="arn:aws:iam::123456789012:role/SentinelAuditorRole",
-        assume_role_session_name="test-session"
+        assume_role_session_name="test-session",
     )
     # The session credentials should now be mock assumed credentials
     creds = auditor.session.get_credentials().get_frozen_credentials()
@@ -642,7 +704,7 @@ def test_severity_overrides_application():
     auditor = AWSSentinelAuditor()
     auditor.config["severity_overrides"] = {
         "S3.Public Access Block is not enabled": "Critical",
-        "EBS Volume is not encrypted": "Medium"
+        "EBS Volume is not encrypted": "Medium",
     }
 
     mock_findings = [
@@ -654,7 +716,7 @@ def test_severity_overrides_application():
             "Status": "FAIL",
             "Finding": "Public Access Block is not enabled",
             "Severity": "High",
-            "RemediationStatus": "None"
+            "RemediationStatus": "None",
         },
         {
             "Service": "EBS",
@@ -664,7 +726,7 @@ def test_severity_overrides_application():
             "Status": "FAIL",
             "Finding": "EBS Volume is not encrypted",
             "Severity": "High",
-            "RemediationStatus": "None"
+            "RemediationStatus": "None",
         },
         {
             "Service": "IAM",
@@ -674,8 +736,8 @@ def test_severity_overrides_application():
             "Status": "FAIL",
             "Finding": "Multi-Factor Authentication (MFA) is disabled",
             "Severity": "High",
-            "RemediationStatus": "None"
-        }
+            "RemediationStatus": "None",
+        },
     ]
 
     processed = auditor._apply_severity_overrides(mock_findings)
@@ -687,55 +749,55 @@ def test_severity_overrides_application():
 
 @mock_aws
 def test_audit_security_groups_all_traffic_selective_revocation_and_no_false_pass():
-    ec2 = boto3.client('ec2', region_name='us-east-1')
-    vpc = ec2.create_vpc(CidrBlock='10.0.0.0/16')
-    vpc_id = vpc['Vpc']['VpcId']
+    ec2 = boto3.client("ec2", region_name="us-east-1")
+    vpc = ec2.create_vpc(CidrBlock="10.0.0.0/16")
+    vpc_id = vpc["Vpc"]["VpcId"]
 
     sg = ec2.create_security_group(
-        GroupName='mixed-traffic-sg',
-        Description='Mixed CIDR all traffic',
-        VpcId=vpc_id
+        GroupName="mixed-traffic-sg", Description="Mixed CIDR all traffic", VpcId=vpc_id
     )
-    sg_id = sg['GroupId']
+    sg_id = sg["GroupId"]
 
     # Authorize all traffic for both public 0.0.0.0/0 AND private 10.0.0.0/16
     ec2.authorize_security_group_ingress(
         GroupId=sg_id,
         IpPermissions=[
-            {
-                'IpProtocol': '-1',
-                'IpRanges': [
-                    {'CidrIp': '0.0.0.0/0'},
-                    {'CidrIp': '10.0.0.0/16'}
-                ]
-            }
-        ]
+            {"IpProtocol": "-1", "IpRanges": [{"CidrIp": "0.0.0.0/0"}, {"CidrIp": "10.0.0.0/16"}]}
+        ],
     )
 
     auditor = AWSSentinelAuditor(dry_run=False)
-    auditor.config['ec2']['ports_to_check'] = [
+    auditor.config["ec2"]["ports_to_check"] = [
         {"port": 22, "protocol": "tcp", "severity": "Critical"}
     ]
 
-    findings = auditor.audit_security_groups(regions=['us-east-1'], remediate=False)
+    findings = auditor.audit_security_groups(regions=["us-east-1"], remediate=False)
     # Check that all traffic FAIL is reported
-    all_traffic_fail = [f for f in findings if f['ResourceID'] == sg_id and "allows all traffic" in f['Finding'].lower()]
+    all_traffic_fail = [
+        f
+        for f in findings
+        if f["ResourceID"] == sg_id and "allows all traffic" in f["Finding"].lower()
+    ]
     assert len(all_traffic_fail) == 1
-    assert all_traffic_fail[0]['Status'] == 'FAIL'
+    assert all_traffic_fail[0]["Status"] == "FAIL"
 
     # Check that port 22 is NOT falsely marked as PASS
-    port_22_pass = [f for f in findings if f['ResourceID'] == sg_id and "Port 22" in f['Finding'] and f['Status'] == 'PASS']
+    port_22_pass = [
+        f
+        for f in findings
+        if f["ResourceID"] == sg_id and "Port 22" in f["Finding"] and f["Status"] == "PASS"
+    ]
     assert len(port_22_pass) == 0
 
     # Remediate: should revoke 0.0.0.0/0 but keep 10.0.0.0/16
-    auditor.audit_security_groups(regions=['us-east-1'], remediate=True)
+    auditor.audit_security_groups(regions=["us-east-1"], remediate=True)
 
-    sg_details = ec2.describe_security_groups(GroupIds=[sg_id])['SecurityGroups'][0]
+    sg_details = ec2.describe_security_groups(GroupIds=[sg_id])["SecurityGroups"][0]
     # The rule for 10.0.0.0/16 should still remain
-    assert len(sg_details['IpPermissions']) == 1
-    remaining_ranges = [ip['CidrIp'] for ip in sg_details['IpPermissions'][0].get('IpRanges', [])]
-    assert '10.0.0.0/16' in remaining_ranges
-    assert '0.0.0.0/0' not in remaining_ranges
+    assert len(sg_details["IpPermissions"]) == 1
+    remaining_ranges = [ip["CidrIp"] for ip in sg_details["IpPermissions"][0].get("IpRanges", [])]
+    assert "10.0.0.0/16" in remaining_ranges
+    assert "0.0.0.0/0" not in remaining_ranges
 
 
 def test_audit_cloudtrail_shadow_trails():
@@ -744,23 +806,23 @@ def test_audit_cloudtrail_shadow_trails():
 
     # Trail returned from another region via shadow trails
     mock_ct_client.describe_trails.return_value = {
-        'trailList': [
+        "trailList": [
             {
-                'Name': 'org-multi-region-trail',
-                'TrailARN': 'arn:aws:cloudtrail:us-west-2:123456789012:trail/org-multi-region-trail',
-                'IsMultiRegionTrail': True
+                "Name": "org-multi-region-trail",
+                "TrailARN": "arn:aws:cloudtrail:us-west-2:123456789012:trail/org-multi-region-trail",
+                "IsMultiRegionTrail": True,
             }
         ]
     }
-    mock_ct_client.get_trail_status.return_value = {'IsLogging': True}
+    mock_ct_client.get_trail_status.return_value = {"IsLogging": True}
 
-    with patch.object(auditor.session, 'client', return_value=mock_ct_client):
+    with patch.object(auditor.session, "client", return_value=mock_ct_client):
         findings = auditor.audit_cloudtrail()
         # Ensure includeShadowTrails=True was passed
         mock_ct_client.describe_trails.assert_called_once_with(includeShadowTrails=True)
         assert len(findings) == 1
-        assert findings[0]['Status'] == 'PASS'
-        assert "Compliant active multi-region" in findings[0]['Finding']
+        assert findings[0]["Status"] == "PASS"
+        assert "Compliant active multi-region" in findings[0]["Finding"]
 
 
 def test_audit_iam_root_account():
@@ -769,28 +831,22 @@ def test_audit_iam_root_account():
 
     # Case 1: Root MFA enabled, no access keys (compliant)
     mock_iam_client.get_account_summary.return_value = {
-        'SummaryMap': {
-            'AccountMFAEnabled': 1,
-            'AccountAccessKeysPresent': 0
-        }
+        "SummaryMap": {"AccountMFAEnabled": 1, "AccountAccessKeysPresent": 0}
     }
     auditor.iam_client = mock_iam_client
     findings = auditor.audit_iam_root_account()
     assert len(findings) == 2
-    assert all(f['Status'] == 'PASS' for f in findings)
-    assert all(f['Severity'] == 'Low' for f in findings)
+    assert all(f["Status"] == "PASS" for f in findings)
+    assert all(f["Severity"] == "Low" for f in findings)
 
     # Case 2: Root MFA disabled, access keys present (non-compliant)
     mock_iam_client.get_account_summary.return_value = {
-        'SummaryMap': {
-            'AccountMFAEnabled': 0,
-            'AccountAccessKeysPresent': 1
-        }
+        "SummaryMap": {"AccountMFAEnabled": 0, "AccountAccessKeysPresent": 1}
     }
     findings_fail = auditor.audit_iam_root_account()
     assert len(findings_fail) == 2
-    assert all(f['Status'] == 'FAIL' for f in findings_fail)
-    assert all(f['Severity'] == 'Critical' for f in findings_fail)
+    assert all(f["Status"] == "FAIL" for f in findings_fail)
+    assert all(f["Severity"] == "Critical" for f in findings_fail)
 
 
 def test_export_findings_formats(tmp_path):
@@ -806,7 +862,7 @@ def test_export_findings_formats(tmp_path):
             "Status": "FAIL",
             "Severity": "High",
             "RemediationStatus": "Remediated",
-            "Finding": "Public Access Block is not enabled"
+            "Finding": "Public Access Block is not enabled",
         }
     ]
 
@@ -821,7 +877,7 @@ def test_export_findings_formats(tmp_path):
     # Test CSV export
     csv_path = str(tmp_path / "report.csv")
     export_findings(mock_findings, csv_path, "csv")
-    with open(csv_path, newline='') as f:
+    with open(csv_path, newline="") as f:
         reader = list(csv.DictReader(f))
     assert len(reader) == 1
     assert reader[0]["ResourceID"] == "sample-bucket"
@@ -861,7 +917,3 @@ def test_lambda_handler_execution():
         assert err_res["statusCode"] == 500
         err_body = json.loads(err_res["body"])
         assert "Simulated AWS error" in err_body["error"]
-
-
-
-

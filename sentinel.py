@@ -22,11 +22,12 @@ class JSONFormatter(logging.Formatter):
             "timestamp": self.formatTime(record, self.datefmt),
             "logger": record.name,
             "level": record.levelname,
-            "message": record.getMessage()
+            "message": record.getMessage(),
         }
         if record.exc_info:
             log_entry["exception"] = self.formatException(record.exc_info)
         return json.dumps(log_entry)
+
 
 # Setup logging
 def setup_logging(level, json_format=False):
@@ -47,46 +48,53 @@ def setup_logging(level, json_format=False):
 
 logger = logging.getLogger("aws-sentinel")
 
+
 class AWSSentinelAuditor:
-    def __init__(self, session=None, dry_run=False, config_path=None, assume_role_arn=None, assume_role_session_name=None):
+    def __init__(
+        self,
+        session=None,
+        dry_run=False,
+        config_path=None,
+        assume_role_arn=None,
+        assume_role_session_name=None,
+    ):
         from botocore.config import Config
+
         self.session = session or boto3.Session()
         self.dry_run = dry_run
         self.config = self._load_config(config_path)
 
         # Configure retry strategy with exponential backoff
-        self.botocore_config = Config(
-            retries={
-                'max_attempts': 5,
-                'mode': 'standard'
-            }
-        )
+        self.botocore_config = Config(retries={"max_attempts": 5, "mode": "standard"})
 
         if assume_role_arn:
             session_name = assume_role_session_name or "AWSSentinelAuditorSession"
             logger.info(f"Assuming role {assume_role_arn}...")
             try:
-                sts_client = self.session.client('sts', config=self.botocore_config)
+                sts_client = self.session.client("sts", config=self.botocore_config)
                 assumed_role = sts_client.assume_role(
-                    RoleArn=assume_role_arn,
-                    RoleSessionName=session_name
+                    RoleArn=assume_role_arn, RoleSessionName=session_name
                 )
-                credentials = assumed_role['Credentials']
+                credentials = assumed_role["Credentials"]
                 self.session = boto3.Session(
-                    aws_access_key_id=credentials['AccessKeyId'],
-                    aws_secret_access_key=credentials['SecretAccessKey'],
-                    aws_session_token=credentials['SessionToken'],
-                    region_name=self.session.region_name
+                    aws_access_key_id=credentials["AccessKeyId"],
+                    aws_secret_access_key=credentials["SecretAccessKey"],
+                    aws_session_token=credentials["SessionToken"],
+                    region_name=self.session.region_name,
                 )
                 logger.info("Successfully assumed role and initialized new session.")
             except ClientError as e:
-                logger.error(f"Failed to assume role {assume_role_arn}: {e}. Falling back to default credentials.")
+                logger.error(
+                    f"Failed to assume role {assume_role_arn}: {e}. Falling back to default credentials."
+                )
 
-        self.s3_client = self.session.client('s3', config=self.botocore_config)
-        self.iam_client = self.session.client('iam', config=self.botocore_config)
+        self.s3_client = self.session.client("s3", config=self.botocore_config)
+        self.iam_client = self.session.client("iam", config=self.botocore_config)
         # EC2 client for default region to discover active regions
-        default_region = self.session.region_name or 'us-east-1'
-        self.ec2_client = self.session.client('ec2', region_name=default_region, config=self.botocore_config)
+        default_region = self.session.region_name or "us-east-1"
+        self.ec2_client = self.session.client(
+            "ec2", region_name=default_region, config=self.botocore_config
+        )
 
     def _load_config(self, config_path):
         default_config = {
@@ -99,20 +107,16 @@ class AWSSentinelAuditor:
                     "require_lowercase": True,
                     "require_numbers": True,
                     "require_symbols": True,
-                    "minimum_length": 14
-                }
+                    "minimum_length": 14,
+                },
             },
-            "ec2": {
-                "ports_to_check": [
-                    {"port": 22, "protocol": "tcp", "severity": "Critical"}
-                ]
-            }
+            "ec2": {"ports_to_check": [{"port": 22, "protocol": "tcp", "severity": "Critical"}]},
         }
         if not config_path:
             return default_config
 
         try:
-            with open(config_path, 'r') as f:
+            with open(config_path, "r") as f:
                 if yaml:
                     loaded = yaml.safe_load(f) or {}
                 else:
@@ -151,24 +155,24 @@ class AWSSentinelAuditor:
         """Retrieves a list of all active AWS regions."""
         try:
             regions_response = self.ec2_client.describe_regions()
-            return [r['RegionName'] for r in regions_response['Regions']]
+            return [r["RegionName"] for r in regions_response["Regions"]]
         except ClientError as e:
             logger.error(f"Failed to describe regions: {e}. Defaulting to session region.")
-            return [self.session.region_name or 'us-east-1']
+            return [self.session.region_name or "us-east-1"]
 
     def audit_s3(self, remediate=False):
         """Audits S3 buckets for Public Access Block settings and remediates if requested."""
         logger.info("Starting S3 bucket audit...")
         findings = []
         try:
-            buckets = self.s3_client.list_buckets().get('Buckets', [])
+            buckets = self.s3_client.list_buckets().get("Buckets", [])
         except ClientError as e:
             logger.error(f"Failed to list S3 buckets: {e}")
             return findings
 
         for bucket in buckets:
-            name = bucket['Name']
-            if name in self.config.get('s3', {}).get('exclude_buckets', []):
+            name = bucket["Name"]
+            if name in self.config.get("s3", {}).get("exclude_buckets", []):
                 logger.info(f"Skipping S3 Bucket '{name}' as per exclusion list.")
                 continue
 
@@ -177,268 +181,324 @@ class AWSSentinelAuditor:
             try:
                 self.s3_client.get_public_access_block(Bucket=name)
                 logger.info(f"✅ S3 Bucket '{name}': Secure (Public Access Blocked)")
-                findings.append({
-                    "Service": "S3",
-                    "Region": "global",
-                    "ResourceID": name,
-                    "ResourceName": name,
-                    "Status": "PASS",
-                    "Finding": "Public Access Block is enabled",
-                    "Severity": "Low",
-                    "RemediationStatus": remediation_status
-                })
-            except ClientError as e:
-                if e.response['Error']['Code'] == 'NoSuchPublicAccessBlockConfiguration':
-                    logger.warning(f"❌ S3 Bucket '{name}': WARNING - Public Access NOT Blocked!")
-
-                    if remediate:
-                        if self.dry_run:
-                            logger.info(f"[DRY-RUN] Would enable Public Access Block for S3 bucket '{name}'")
-                            remediation_status = "Dry-Run: Enable Public Access Block"
-                        else:
-                            try:
-                                logger.info(f"Remediating S3 bucket '{name}': Enabling Public Access Block...")
-                                self.s3_client.put_public_access_block(
-                                    Bucket=name,
-                                    PublicAccessBlockConfiguration={
-                                        'BlockPublicAcls': True,
-                                        'IgnorePublicAcls': True,
-                                        'BlockPublicPolicy': True,
-                                        'RestrictPublicBuckets': True
-                                    }
-                                )
-                                logger.info(f"✅ S3 Bucket '{name}': Successfully Remediated")
-                                remediation_status = "Remediated"
-                            except ClientError as re:
-                                logger.error(f"Failed to remediate S3 bucket '{name}': {re}")
-                                remediation_status = f"Remediation Failed: {re.response['Error']['Message']}"
-                    else:
-                        remediation_status = "None (Remediation not requested)"
-
-                    findings.append({
-                        "Service": "S3",
-                        "Region": "global",
-                        "ResourceID": name,
-                        "ResourceName": name,
-                        "Status": "FAIL",
-                        "Finding": "Public Access Block is not enabled",
-                        "Severity": "High",
-                        "RemediationStatus": remediation_status
-                    })
-                else:
-                    logger.error(f"Error checking public access block for bucket '{name}': {e}")
-                    findings.append({
-                        "Service": "S3",
-                        "Region": "global",
-                        "ResourceID": name,
-                        "ResourceName": name,
-                        "Status": "ERROR",
-                        "Finding": f"Failed to retrieve configuration: {e.response['Error']['Message']}",
-                        "Severity": "Medium",
-                        "RemediationStatus": remediation_status
-                    })
-
-            # 2. Server-side Encryption Check
-            if self.config.get('s3', {}).get('check_encryption', True):
-                enc_remediation_status = "N/A"
-                try:
-                    self.s3_client.get_bucket_encryption(Bucket=name)
-                    logger.info(f"✅ S3 Bucket '{name}': Secure (Default Encryption Enabled)")
-                    findings.append({
+                findings.append(
+                    {
                         "Service": "S3",
                         "Region": "global",
                         "ResourceID": name,
                         "ResourceName": name,
                         "Status": "PASS",
-                        "Finding": "Default encryption is enabled",
+                        "Finding": "Public Access Block is enabled",
                         "Severity": "Low",
-                        "RemediationStatus": enc_remediation_status
-                    })
-                except ClientError as e:
-                    if e.response['Error']['Code'] == 'ServerSideEncryptionConfigurationNotFoundError':
-                        logger.warning(f"❌ S3 Bucket '{name}': WARNING - Default Encryption NOT Enabled!")
+                        "RemediationStatus": remediation_status,
+                    }
+                )
+            except ClientError as e:
+                if e.response["Error"]["Code"] == "NoSuchPublicAccessBlockConfiguration":
+                    logger.warning(f"❌ S3 Bucket '{name}': WARNING - Public Access NOT Blocked!")
 
-                        enc_algo = self.config.get('s3', {}).get('encryption_algorithm', 'AES256')
-                        kms_key_id = self.config.get('s3', {}).get('kms_master_key_id')
-                        apply_rule = {'SSEAlgorithm': enc_algo}
-                        if kms_key_id and enc_algo == 'aws:kms':
-                            apply_rule['KMSMasterKeyId'] = kms_key_id
-
-                        if remediate:
-                            if self.dry_run:
-                                logger.info(f"[DRY-RUN] Would enable default {enc_algo} encryption for S3 bucket '{name}'")
-                                enc_remediation_status = f"Dry-Run: Enable {enc_algo} Encryption"
-                            else:
-                                try:
-                                    logger.info(f"Remediating S3 bucket '{name}': Enabling default {enc_algo} encryption...")
-                                    self.s3_client.put_bucket_encryption(
-                                        Bucket=name,
-                                        ServerSideEncryptionConfiguration={
-                                            'Rules': [
-                                                {
-                                                    'ApplyServerSideEncryptionByDefault': apply_rule
-                                                }
-                                            ]
-                                        }
-                                    )
-                                    logger.info(f"✅ S3 Bucket '{name}': Default Encryption Enabled")
-                                    enc_remediation_status = "Remediated"
-                                except ClientError as re:
-                                    logger.error(f"Failed to enable encryption for S3 bucket '{name}': {re}")
-                                    enc_remediation_status = f"Remediation Failed: {re.response['Error']['Message']}"
+                    if remediate:
+                        if self.dry_run:
+                            logger.info(
+                                f"[DRY-RUN] Would enable Public Access Block for S3 bucket '{name}'"
+                            )
+                            remediation_status = "Dry-Run: Enable Public Access Block"
                         else:
-                            enc_remediation_status = "None (Remediation not requested)"
+                            try:
+                                logger.info(
+                                    f"Remediating S3 bucket '{name}': Enabling Public Access Block..."
+                                )
+                                self.s3_client.put_public_access_block(
+                                    Bucket=name,
+                                    PublicAccessBlockConfiguration={
+                                        "BlockPublicAcls": True,
+                                        "IgnorePublicAcls": True,
+                                        "BlockPublicPolicy": True,
+                                        "RestrictPublicBuckets": True,
+                                    },
+                                )
+                                logger.info(f"✅ S3 Bucket '{name}': Successfully Remediated")
+                                remediation_status = "Remediated"
+                            except ClientError as re:
+                                logger.error(f"Failed to remediate S3 bucket '{name}': {re}")
+                                remediation_status = (
+                                    f"Remediation Failed: {re.response['Error']['Message']}"
+                                )
+                    else:
+                        remediation_status = "None (Remediation not requested)"
 
-                        findings.append({
+                    findings.append(
+                        {
                             "Service": "S3",
                             "Region": "global",
                             "ResourceID": name,
                             "ResourceName": name,
                             "Status": "FAIL",
-                            "Finding": "Default encryption is not enabled",
-                            "Severity": "Medium",
-                            "RemediationStatus": enc_remediation_status
-                        })
-                    else:
-                        logger.error(f"Error checking encryption for bucket '{name}': {e}")
-                        findings.append({
+                            "Finding": "Public Access Block is not enabled",
+                            "Severity": "High",
+                            "RemediationStatus": remediation_status,
+                        }
+                    )
+                else:
+                    logger.error(f"Error checking public access block for bucket '{name}': {e}")
+                    findings.append(
+                        {
                             "Service": "S3",
                             "Region": "global",
                             "ResourceID": name,
                             "ResourceName": name,
                             "Status": "ERROR",
-                            "Finding": f"Failed to retrieve default encryption: {e.response['Error']['Message']}",
+                            "Finding": f"Failed to retrieve configuration: {e.response['Error']['Message']}",
                             "Severity": "Medium",
-                            "RemediationStatus": "N/A"
-                        })
+                            "RemediationStatus": remediation_status,
+                        }
+                    )
 
-            # 3. Versioning Check
-            if self.config.get('s3', {}).get('check_versioning', True):
+            # 2. Server-side Encryption Check
+            if self.config.get("s3", {}).get("check_encryption", True):
+                enc_remediation_status = "N/A"
                 try:
-                    versioning = self.s3_client.get_bucket_versioning(Bucket=name)
-                    status = versioning.get('Status', 'Disabled')
-                    if status == 'Enabled':
-                        logger.info(f"✅ S3 Bucket '{name}': Secure (Versioning Enabled)")
-                        findings.append({
+                    self.s3_client.get_bucket_encryption(Bucket=name)
+                    logger.info(f"✅ S3 Bucket '{name}': Secure (Default Encryption Enabled)")
+                    findings.append(
+                        {
                             "Service": "S3",
                             "Region": "global",
                             "ResourceID": name,
                             "ResourceName": name,
                             "Status": "PASS",
-                            "Finding": "Bucket versioning is enabled",
+                            "Finding": "Default encryption is enabled",
                             "Severity": "Low",
-                            "RemediationStatus": "N/A"
-                        })
-                    else:
-                        logger.warning(f"❌ S3 Bucket '{name}': WARNING - Versioning is {status.upper()}!")
+                            "RemediationStatus": enc_remediation_status,
+                        }
+                    )
+                except ClientError as e:
+                    if (
+                        e.response["Error"]["Code"]
+                        == "ServerSideEncryptionConfigurationNotFoundError"
+                    ):
+                        logger.warning(
+                            f"❌ S3 Bucket '{name}': WARNING - Default Encryption NOT Enabled!"
+                        )
+
+                        enc_algo = self.config.get("s3", {}).get("encryption_algorithm", "AES256")
+                        kms_key_id = self.config.get("s3", {}).get("kms_master_key_id")
+                        apply_rule = {"SSEAlgorithm": enc_algo}
+                        if kms_key_id and enc_algo == "aws:kms":
+                            apply_rule["KMSMasterKeyId"] = kms_key_id
 
                         if remediate:
                             if self.dry_run:
-                                logger.info(f"[DRY-RUN] Would enable versioning for S3 bucket '{name}'")
+                                logger.info(
+                                    f"[DRY-RUN] Would enable default {enc_algo} encryption for S3 bucket '{name}'"
+                                )
+                                enc_remediation_status = f"Dry-Run: Enable {enc_algo} Encryption"
+                            else:
+                                try:
+                                    logger.info(
+                                        f"Remediating S3 bucket '{name}': Enabling default {enc_algo} encryption..."
+                                    )
+                                    self.s3_client.put_bucket_encryption(
+                                        Bucket=name,
+                                        ServerSideEncryptionConfiguration={
+                                            "Rules": [
+                                                {"ApplyServerSideEncryptionByDefault": apply_rule}
+                                            ]
+                                        },
+                                    )
+                                    logger.info(
+                                        f"✅ S3 Bucket '{name}': Default Encryption Enabled"
+                                    )
+                                    enc_remediation_status = "Remediated"
+                                except ClientError as re:
+                                    logger.error(
+                                        f"Failed to enable encryption for S3 bucket '{name}': {re}"
+                                    )
+                                    enc_remediation_status = (
+                                        f"Remediation Failed: {re.response['Error']['Message']}"
+                                    )
+                        else:
+                            enc_remediation_status = "None (Remediation not requested)"
+
+                        findings.append(
+                            {
+                                "Service": "S3",
+                                "Region": "global",
+                                "ResourceID": name,
+                                "ResourceName": name,
+                                "Status": "FAIL",
+                                "Finding": "Default encryption is not enabled",
+                                "Severity": "Medium",
+                                "RemediationStatus": enc_remediation_status,
+                            }
+                        )
+                    else:
+                        logger.error(f"Error checking encryption for bucket '{name}': {e}")
+                        findings.append(
+                            {
+                                "Service": "S3",
+                                "Region": "global",
+                                "ResourceID": name,
+                                "ResourceName": name,
+                                "Status": "ERROR",
+                                "Finding": f"Failed to retrieve default encryption: {e.response['Error']['Message']}",
+                                "Severity": "Medium",
+                                "RemediationStatus": "N/A",
+                            }
+                        )
+
+            # 3. Versioning Check
+            if self.config.get("s3", {}).get("check_versioning", True):
+                try:
+                    versioning = self.s3_client.get_bucket_versioning(Bucket=name)
+                    status = versioning.get("Status", "Disabled")
+                    if status == "Enabled":
+                        logger.info(f"✅ S3 Bucket '{name}': Secure (Versioning Enabled)")
+                        findings.append(
+                            {
+                                "Service": "S3",
+                                "Region": "global",
+                                "ResourceID": name,
+                                "ResourceName": name,
+                                "Status": "PASS",
+                                "Finding": "Bucket versioning is enabled",
+                                "Severity": "Low",
+                                "RemediationStatus": "N/A",
+                            }
+                        )
+                    else:
+                        logger.warning(
+                            f"❌ S3 Bucket '{name}': WARNING - Versioning is {status.upper()}!"
+                        )
+
+                        if remediate:
+                            if self.dry_run:
+                                logger.info(
+                                    f"[DRY-RUN] Would enable versioning for S3 bucket '{name}'"
+                                )
                                 ver_remediation_status = "Dry-Run: Enable Versioning"
                             else:
                                 try:
-                                    logger.info(f"Remediating S3 bucket '{name}': Enabling bucket versioning...")
+                                    logger.info(
+                                        f"Remediating S3 bucket '{name}': Enabling bucket versioning..."
+                                    )
                                     self.s3_client.put_bucket_versioning(
-                                        Bucket=name,
-                                        VersioningConfiguration={
-                                            'Status': 'Enabled'
-                                        }
+                                        Bucket=name, VersioningConfiguration={"Status": "Enabled"}
                                     )
                                     logger.info(f"✅ S3 Bucket '{name}': Versioning Enabled")
                                     ver_remediation_status = "Remediated"
                                 except ClientError as re:
-                                    logger.error(f"Failed to enable versioning for S3 bucket '{name}': {re}")
-                                    ver_remediation_status = f"Remediation Failed: {re.response['Error']['Message']}"
+                                    logger.error(
+                                        f"Failed to enable versioning for S3 bucket '{name}': {re}"
+                                    )
+                                    ver_remediation_status = (
+                                        f"Remediation Failed: {re.response['Error']['Message']}"
+                                    )
                         else:
                             ver_remediation_status = "None (Remediation not requested)"
 
-                        findings.append({
+                        findings.append(
+                            {
+                                "Service": "S3",
+                                "Region": "global",
+                                "ResourceID": name,
+                                "ResourceName": name,
+                                "Status": "FAIL",
+                                "Finding": f"Bucket versioning is {status.lower()}",
+                                "Severity": "Medium",
+                                "RemediationStatus": ver_remediation_status,
+                            }
+                        )
+                except ClientError as e:
+                    logger.error(f"Error checking versioning for bucket '{name}': {e}")
+                    findings.append(
+                        {
                             "Service": "S3",
                             "Region": "global",
                             "ResourceID": name,
                             "ResourceName": name,
-                            "Status": "FAIL",
-                            "Finding": f"Bucket versioning is {status.lower()}",
+                            "Status": "ERROR",
+                            "Finding": f"Failed to retrieve versioning configuration: {e.response['Error']['Message']}",
                             "Severity": "Medium",
-                            "RemediationStatus": ver_remediation_status
-                        })
-                except ClientError as e:
-                    logger.error(f"Error checking versioning for bucket '{name}': {e}")
-                    findings.append({
-                        "Service": "S3",
-                        "Region": "global",
-                        "ResourceID": name,
-                        "ResourceName": name,
-                        "Status": "ERROR",
-                        "Finding": f"Failed to retrieve versioning configuration: {e.response['Error']['Message']}",
-                        "Severity": "Medium",
-                        "RemediationStatus": "N/A"
-                    })
+                            "RemediationStatus": "N/A",
+                        }
+                    )
 
             # 4. Secure Transport (HTTPS) Policy Check
-            if self.config.get('s3', {}).get('check_secure_transport', False):
+            if self.config.get("s3", {}).get("check_secure_transport", False):
                 try:
-                    policy_str = self.s3_client.get_bucket_policy(Bucket=name).get('Policy', '{}')
+                    policy_str = self.s3_client.get_bucket_policy(Bucket=name).get("Policy", "{}")
                     policy = json.loads(policy_str)
                     has_secure_transport_rule = False
-                    for stmt in policy.get('Statement', []):
-                        if stmt.get('Effect') == 'Deny':
-                            condition = stmt.get('Condition', {})
-                            bool_cond = condition.get('Bool', {})
-                            if bool_cond.get('aws:SecureTransport') in ['false', False, 'False']:
+                    for stmt in policy.get("Statement", []):
+                        if stmt.get("Effect") == "Deny":
+                            condition = stmt.get("Condition", {})
+                            bool_cond = condition.get("Bool", {})
+                            if bool_cond.get("aws:SecureTransport") in ["false", False, "False"]:
                                 has_secure_transport_rule = True
                                 break
 
                     if has_secure_transport_rule:
                         logger.info(f"✅ S3 Bucket '{name}': Secure (Enforces HTTPS/TLS Transport)")
-                        findings.append({
-                            "Service": "S3",
-                            "Region": "global",
-                            "ResourceID": name,
-                            "ResourceName": name,
-                            "Status": "PASS",
-                            "Finding": "Bucket policy enforces TLS/HTTPS secure transport",
-                            "Severity": "Low",
-                            "RemediationStatus": "N/A"
-                        })
+                        findings.append(
+                            {
+                                "Service": "S3",
+                                "Region": "global",
+                                "ResourceID": name,
+                                "ResourceName": name,
+                                "Status": "PASS",
+                                "Finding": "Bucket policy enforces TLS/HTTPS secure transport",
+                                "Severity": "Low",
+                                "RemediationStatus": "N/A",
+                            }
+                        )
                     else:
-                        logger.warning(f"❌ S3 Bucket '{name}': WARNING - Bucket policy does NOT enforce HTTPS/TLS transport!")
-                        findings.append({
-                            "Service": "S3",
-                            "Region": "global",
-                            "ResourceID": name,
-                            "ResourceName": name,
-                            "Status": "FAIL",
-                            "Finding": "Bucket policy does not enforce TLS/HTTPS secure transport",
-                            "Severity": "High",
-                            "RemediationStatus": "Manual Intervention Required"
-                        })
+                        logger.warning(
+                            f"❌ S3 Bucket '{name}': WARNING - Bucket policy does NOT enforce HTTPS/TLS transport!"
+                        )
+                        findings.append(
+                            {
+                                "Service": "S3",
+                                "Region": "global",
+                                "ResourceID": name,
+                                "ResourceName": name,
+                                "Status": "FAIL",
+                                "Finding": "Bucket policy does not enforce TLS/HTTPS secure transport",
+                                "Severity": "High",
+                                "RemediationStatus": "Manual Intervention Required",
+                            }
+                        )
                 except ClientError as e:
-                    if e.response['Error']['Code'] == 'NoSuchBucketPolicy':
-                        logger.warning(f"❌ S3 Bucket '{name}': WARNING - No bucket policy defined (Secure Transport NOT enforced)!")
-                        findings.append({
-                            "Service": "S3",
-                            "Region": "global",
-                            "ResourceID": name,
-                            "ResourceName": name,
-                            "Status": "FAIL",
-                            "Finding": "Bucket policy does not enforce TLS/HTTPS secure transport",
-                            "Severity": "High",
-                            "RemediationStatus": "Manual Intervention Required"
-                        })
+                    if e.response["Error"]["Code"] == "NoSuchBucketPolicy":
+                        logger.warning(
+                            f"❌ S3 Bucket '{name}': WARNING - No bucket policy defined (Secure Transport NOT enforced)!"
+                        )
+                        findings.append(
+                            {
+                                "Service": "S3",
+                                "Region": "global",
+                                "ResourceID": name,
+                                "ResourceName": name,
+                                "Status": "FAIL",
+                                "Finding": "Bucket policy does not enforce TLS/HTTPS secure transport",
+                                "Severity": "High",
+                                "RemediationStatus": "Manual Intervention Required",
+                            }
+                        )
                     else:
                         logger.error(f"Error checking bucket policy for '{name}': {e}")
-                        findings.append({
-                            "Service": "S3",
-                            "Region": "global",
-                            "ResourceID": name,
-                            "ResourceName": name,
-                            "Status": "ERROR",
-                            "Finding": f"Failed to retrieve bucket policy: {e.response['Error']['Message']}",
-                            "Severity": "Medium",
-                            "RemediationStatus": "N/A"
-                        })
+                        findings.append(
+                            {
+                                "Service": "S3",
+                                "Region": "global",
+                                "ResourceID": name,
+                                "ResourceName": name,
+                                "Status": "ERROR",
+                                "Finding": f"Failed to retrieve bucket policy: {e.response['Error']['Message']}",
+                                "Severity": "Medium",
+                                "RemediationStatus": "N/A",
+                            }
+                        )
 
         return self._apply_severity_overrides(findings)
 
@@ -447,102 +507,126 @@ class AWSSentinelAuditor:
         logger.info("Starting IAM audit...")
         findings = []
         try:
-            paginator = self.iam_client.get_paginator('list_users')
+            paginator = self.iam_client.get_paginator("list_users")
             pages = paginator.paginate()
         except ClientError as e:
             logger.error(f"Failed to initialize IAM list_users paginator: {e}")
             return findings
 
         for page in pages:
-            for user in page.get('Users', []):
-                username = user['UserName']
+            for user in page.get("Users", []):
+                username = user["UserName"]
                 remediation_status = "N/A"
                 try:
-                    mfa_devices = self.iam_client.list_mfa_devices(UserName=username).get('MFADevices', [])
+                    mfa_devices = self.iam_client.list_mfa_devices(UserName=username).get(
+                        "MFADevices", []
+                    )
                     if not mfa_devices:
                         logger.warning(f"❌ IAM User '{username}': MFA is DISABLED!")
                         if remediate:
-                            logger.info(f"Remediation for IAM User '{username}': MFA requires manual setup by user.")
+                            logger.info(
+                                f"Remediation for IAM User '{username}': MFA requires manual setup by user."
+                            )
                             remediation_status = "Manual Intervention Required"
                         else:
                             remediation_status = "None (Remediation not requested)"
 
-                        findings.append({
-                            "Service": "IAM",
-                            "Region": "global",
-                            "ResourceID": user['Arn'],
-                            "ResourceName": username,
-                            "Status": "FAIL",
-                            "Finding": "Multi-Factor Authentication (MFA) is disabled",
-                            "Severity": "High",
-                            "RemediationStatus": remediation_status
-                        })
-                    else:
-                        logger.info(f"✅ IAM User '{username}': MFA is Active")
-                        findings.append({
-                            "Service": "IAM",
-                            "Region": "global",
-                            "ResourceID": user['Arn'],
-                            "ResourceName": username,
-                            "Status": "PASS",
-                            "Finding": "Multi-Factor Authentication (MFA) is active",
-                            "Severity": "Low",
-                            "RemediationStatus": remediation_status
-                        })
-                except ClientError as e:
-                    logger.error(f"Error checking MFA for user '{username}': {e}")
-                    findings.append({
-                        "Service": "IAM",
-                        "Region": "global",
-                        "ResourceID": user['Arn'],
-                        "ResourceName": username,
-                        "Status": "ERROR",
-                        "Finding": f"Failed to retrieve MFA devices: {e.response['Error']['Message']}",
-                        "Severity": "Medium",
-                        "RemediationStatus": remediation_status
-                    })
-
-                # 2. Access Key Age Check
-                max_age_days = self.config.get('iam', {}).get('max_access_key_age_days', 90)
-                try:
-                    keys = self.iam_client.list_access_keys(UserName=username).get('AccessKeyMetadata', [])
-                    now = datetime.datetime.now(datetime.timezone.utc)
-                    for key in keys:
-                        key_id = key['AccessKeyId']
-                        create_date = key['CreateDate']
-                        age_days = (now - create_date).days
-                        if age_days > max_age_days:
-                            logger.warning(f"❌ IAM User '{username}': Access Key '{key_id}' is {age_days} days old (Limit: {max_age_days} days)!")
-                            findings.append({
+                        findings.append(
+                            {
                                 "Service": "IAM",
                                 "Region": "global",
-                                "ResourceID": key_id,
+                                "ResourceID": user["Arn"],
                                 "ResourceName": username,
                                 "Status": "FAIL",
-                                "Finding": f"Access Key is older than {max_age_days} days ({age_days} days)",
-                                "Severity": "Medium",
-                                "RemediationStatus": "Manual Intervention Required"
-                            })
-                        else:
-                            logger.info(f"✅ IAM User '{username}': Access Key '{key_id}' is active and compliant ({age_days} days old)")
-                            findings.append({
+                                "Finding": "Multi-Factor Authentication (MFA) is disabled",
+                                "Severity": "High",
+                                "RemediationStatus": remediation_status,
+                            }
+                        )
+                    else:
+                        logger.info(f"✅ IAM User '{username}': MFA is Active")
+                        findings.append(
+                            {
                                 "Service": "IAM",
                                 "Region": "global",
-                                "ResourceID": key_id,
+                                "ResourceID": user["Arn"],
                                 "ResourceName": username,
                                 "Status": "PASS",
-                                "Finding": f"Access Key is active and compliant ({age_days} days old)",
+                                "Finding": "Multi-Factor Authentication (MFA) is active",
                                 "Severity": "Low",
-                                "RemediationStatus": "N/A"
-                            })
+                                "RemediationStatus": remediation_status,
+                            }
+                        )
+                except ClientError as e:
+                    logger.error(f"Error checking MFA for user '{username}': {e}")
+                    findings.append(
+                        {
+                            "Service": "IAM",
+                            "Region": "global",
+                            "ResourceID": user["Arn"],
+                            "ResourceName": username,
+                            "Status": "ERROR",
+                            "Finding": f"Failed to retrieve MFA devices: {e.response['Error']['Message']}",
+                            "Severity": "Medium",
+                            "RemediationStatus": remediation_status,
+                        }
+                    )
+
+                # 2. Access Key Age Check
+                max_age_days = self.config.get("iam", {}).get("max_access_key_age_days", 90)
+                try:
+                    keys = self.iam_client.list_access_keys(UserName=username).get(
+                        "AccessKeyMetadata", []
+                    )
+                    now = datetime.datetime.now(datetime.timezone.utc)
+                    for key in keys:
+                        key_id = key["AccessKeyId"]
+                        create_date = key["CreateDate"]
+                        age_days = (now - create_date).days
+                        if age_days > max_age_days:
+                            logger.warning(
+                                f"❌ IAM User '{username}': Access Key '{key_id}' is {age_days} days old (Limit: {max_age_days} days)!"
+                            )
+                            findings.append(
+                                {
+                                    "Service": "IAM",
+                                    "Region": "global",
+                                    "ResourceID": key_id,
+                                    "ResourceName": username,
+                                    "Status": "FAIL",
+                                    "Finding": f"Access Key is older than {max_age_days} days ({age_days} days)",
+                                    "Severity": "Medium",
+                                    "RemediationStatus": "Manual Intervention Required",
+                                }
+                            )
+                        else:
+                            logger.info(
+                                f"✅ IAM User '{username}': Access Key '{key_id}' is active and compliant ({age_days} days old)"
+                            )
+                            findings.append(
+                                {
+                                    "Service": "IAM",
+                                    "Region": "global",
+                                    "ResourceID": key_id,
+                                    "ResourceName": username,
+                                    "Status": "PASS",
+                                    "Finding": f"Access Key is active and compliant ({age_days} days old)",
+                                    "Severity": "Low",
+                                    "RemediationStatus": "N/A",
+                                }
+                            )
 
                         # 3. Unused Access Key Check
-                        max_unused_days = self.config.get('iam', {}).get('max_unused_access_key_days', 90)
+                        max_unused_days = self.config.get("iam", {}).get(
+                            "max_unused_access_key_days", 90
+                        )
                         unused_remediation_status = "N/A"
                         try:
-                            last_used_resp = self.iam_client.get_access_key_last_used(AccessKeyId=key_id)
-                            last_used_info = last_used_resp.get('AccessKeyLastUsed', {})
-                            last_used_date = last_used_info.get('LastUsedDate')
+                            last_used_resp = self.iam_client.get_access_key_last_used(
+                                AccessKeyId=key_id
+                            )
+                            last_used_info = last_used_resp.get("AccessKeyLastUsed", {})
+                            last_used_date = last_used_info.get("LastUsedDate")
 
                             if last_used_date:
                                 unused_days = (now - last_used_date).days
@@ -554,75 +638,101 @@ class AWSSentinelAuditor:
                                 finding_msg = f"Access Key has never been used and is {unused_days} days old (Limit: {max_unused_days} days)"
 
                             if is_unused:
-                                logger.warning(f"❌ IAM User '{username}': Access Key '{key_id}' is unused for {unused_days} days!")
+                                logger.warning(
+                                    f"❌ IAM User '{username}': Access Key '{key_id}' is unused for {unused_days} days!"
+                                )
                                 if remediate:
                                     if self.dry_run:
-                                        logger.info(f"[DRY-RUN] Would deactivate unused Access Key '{key_id}' for user '{username}'")
+                                        logger.info(
+                                            f"[DRY-RUN] Would deactivate unused Access Key '{key_id}' for user '{username}'"
+                                        )
                                         unused_remediation_status = "Dry-Run: Deactivate Access Key"
                                     else:
                                         try:
-                                            logger.info(f"Remediating IAM User '{username}': Deactivating unused Access Key '{key_id}'...")
+                                            logger.info(
+                                                f"Remediating IAM User '{username}': Deactivating unused Access Key '{key_id}'..."
+                                            )
                                             self.iam_client.update_access_key(
                                                 UserName=username,
                                                 AccessKeyId=key_id,
-                                                Status='Inactive'
+                                                Status="Inactive",
                                             )
-                                            logger.info(f"✅ IAM Access Key '{key_id}': Successfully Deactivated")
+                                            logger.info(
+                                                f"✅ IAM Access Key '{key_id}': Successfully Deactivated"
+                                            )
                                             unused_remediation_status = "Remediated (Deactivated)"
                                         except ClientError as re:
-                                            logger.error(f"Failed to deactivate Access Key '{key_id}': {re}")
+                                            logger.error(
+                                                f"Failed to deactivate Access Key '{key_id}': {re}"
+                                            )
                                             unused_remediation_status = f"Remediation Failed: {re.response['Error']['Message']}"
                                 else:
                                     unused_remediation_status = "None (Remediation not requested)"
 
-                                findings.append({
-                                    "Service": "IAM",
-                                    "Region": "global",
-                                    "ResourceID": key_id,
-                                    "ResourceName": username,
-                                    "Status": "FAIL",
-                                    "Finding": finding_msg,
-                                    "Severity": "Medium",
-                                    "RemediationStatus": unused_remediation_status
-                                })
+                                findings.append(
+                                    {
+                                        "Service": "IAM",
+                                        "Region": "global",
+                                        "ResourceID": key_id,
+                                        "ResourceName": username,
+                                        "Status": "FAIL",
+                                        "Finding": finding_msg,
+                                        "Severity": "Medium",
+                                        "RemediationStatus": unused_remediation_status,
+                                    }
+                                )
                             else:
-                                usage_str = f"last used {unused_days} days ago" if last_used_date else "never used"
-                                logger.info(f"✅ IAM User '{username}': Access Key '{key_id}' usage is compliant ({usage_str})")
-                                findings.append({
+                                usage_str = (
+                                    f"last used {unused_days} days ago"
+                                    if last_used_date
+                                    else "never used"
+                                )
+                                logger.info(
+                                    f"✅ IAM User '{username}': Access Key '{key_id}' usage is compliant ({usage_str})"
+                                )
+                                findings.append(
+                                    {
+                                        "Service": "IAM",
+                                        "Region": "global",
+                                        "ResourceID": key_id,
+                                        "ResourceName": username,
+                                        "Status": "PASS",
+                                        "Finding": f"Access Key usage is compliant ({usage_str})",
+                                        "Severity": "Low",
+                                        "RemediationStatus": "N/A",
+                                    }
+                                )
+                        except ClientError as e:
+                            logger.error(
+                                f"Error checking last used time for access key '{key_id}': {e}"
+                            )
+                            findings.append(
+                                {
                                     "Service": "IAM",
                                     "Region": "global",
                                     "ResourceID": key_id,
                                     "ResourceName": username,
-                                    "Status": "PASS",
-                                    "Finding": f"Access Key usage is compliant ({usage_str})",
-                                    "Severity": "Low",
-                                    "RemediationStatus": "N/A"
-                                })
-                        except ClientError as e:
-                            logger.error(f"Error checking last used time for access key '{key_id}': {e}")
-                            findings.append({
-                                "Service": "IAM",
-                                "Region": "global",
-                                "ResourceID": key_id,
-                                "ResourceName": username,
-                                "Status": "ERROR",
-                                "Finding": f"Failed to check access key last used time: {e.response['Error']['Message']}",
-                                "Severity": "Medium",
-                                "RemediationStatus": "N/A"
-                            })
+                                    "Status": "ERROR",
+                                    "Finding": f"Failed to check access key last used time: {e.response['Error']['Message']}",
+                                    "Severity": "Medium",
+                                    "RemediationStatus": "N/A",
+                                }
+                            )
                 except ClientError as e:
                     logger.error(f"Error checking access keys for user '{username}': {e}")
-                    findings.append({
-                        "Service": "IAM",
-                        "Region": "global",
-                        "ResourceID": user['Arn'],
-                        "ResourceName": username,
-                        "Status": "ERROR",
-                        "Finding": f"Failed to retrieve access keys: {e.response['Error']['Message']}",
-                        "Severity": "Medium",
-                        "RemediationStatus": "N/A"
-                    })
-        if self.config.get('iam', {}).get('check_root_account', False):
+                    findings.append(
+                        {
+                            "Service": "IAM",
+                            "Region": "global",
+                            "ResourceID": user["Arn"],
+                            "ResourceName": username,
+                            "Status": "ERROR",
+                            "Finding": f"Failed to retrieve access keys: {e.response['Error']['Message']}",
+                            "Severity": "Medium",
+                            "RemediationStatus": "N/A",
+                        }
+                    )
+        if self.config.get("iam", {}).get("check_root_account", False):
             findings.extend(self.audit_iam_root_account())
         findings.extend(self.audit_iam_password_policy())
         return self._apply_severity_overrides(findings)
@@ -632,93 +742,108 @@ class AWSSentinelAuditor:
         logger.info("Auditing IAM Root Account compliance...")
         findings = []
         try:
-            summary = self.iam_client.get_account_summary().get('SummaryMap', {})
+            summary = self.iam_client.get_account_summary().get("SummaryMap", {})
             # 1. Root Account MFA Check
-            root_mfa = summary.get('AccountMFAEnabled', 0) == 1
+            root_mfa = summary.get("AccountMFAEnabled", 0) == 1
             if root_mfa:
                 logger.info("✅ IAM Root Account: Secure (MFA is Enabled)")
-                findings.append({
-                    "Service": "IAM",
-                    "Region": "global",
-                    "ResourceID": "RootAccount",
-                    "ResourceName": "AWS Root Account",
-                    "Status": "PASS",
-                    "Finding": "Root account Multi-Factor Authentication (MFA) is enabled",
-                    "Severity": "Low",
-                    "RemediationStatus": "N/A"
-                })
+                findings.append(
+                    {
+                        "Service": "IAM",
+                        "Region": "global",
+                        "ResourceID": "RootAccount",
+                        "ResourceName": "AWS Root Account",
+                        "Status": "PASS",
+                        "Finding": "Root account Multi-Factor Authentication (MFA) is enabled",
+                        "Severity": "Low",
+                        "RemediationStatus": "N/A",
+                    }
+                )
             else:
                 logger.warning("❌ IAM Root Account: CRITICAL - Root MFA is DISABLED!")
-                findings.append({
-                    "Service": "IAM",
-                    "Region": "global",
-                    "ResourceID": "RootAccount",
-                    "ResourceName": "AWS Root Account",
-                    "Status": "FAIL",
-                    "Finding": "Root account Multi-Factor Authentication (MFA) is disabled",
-                    "Severity": "Critical",
-                    "RemediationStatus": "Manual Intervention Required"
-                })
+                findings.append(
+                    {
+                        "Service": "IAM",
+                        "Region": "global",
+                        "ResourceID": "RootAccount",
+                        "ResourceName": "AWS Root Account",
+                        "Status": "FAIL",
+                        "Finding": "Root account Multi-Factor Authentication (MFA) is disabled",
+                        "Severity": "Critical",
+                        "RemediationStatus": "Manual Intervention Required",
+                    }
+                )
 
             # 2. Root Account Access Keys Check
-            root_keys = summary.get('AccountAccessKeysPresent', 0) == 1
+            root_keys = summary.get("AccountAccessKeysPresent", 0) == 1
             if not root_keys:
                 logger.info("✅ IAM Root Account: Secure (No active access keys)")
-                findings.append({
-                    "Service": "IAM",
-                    "Region": "global",
-                    "ResourceID": "RootAccount",
-                    "ResourceName": "AWS Root Account",
-                    "Status": "PASS",
-                    "Finding": "No access keys exist for the root account",
-                    "Severity": "Low",
-                    "RemediationStatus": "N/A"
-                })
+                findings.append(
+                    {
+                        "Service": "IAM",
+                        "Region": "global",
+                        "ResourceID": "RootAccount",
+                        "ResourceName": "AWS Root Account",
+                        "Status": "PASS",
+                        "Finding": "No access keys exist for the root account",
+                        "Severity": "Low",
+                        "RemediationStatus": "N/A",
+                    }
+                )
             else:
-                logger.warning("❌ IAM Root Account: CRITICAL - Root account has active access keys!")
-                findings.append({
-                    "Service": "IAM",
-                    "Region": "global",
-                    "ResourceID": "RootAccount",
-                    "ResourceName": "AWS Root Account",
-                    "Status": "FAIL",
-                    "Finding": "Root account has active access keys (delete immediately)",
-                    "Severity": "Critical",
-                    "RemediationStatus": "Manual Intervention Required"
-                })
+                logger.warning(
+                    "❌ IAM Root Account: CRITICAL - Root account has active access keys!"
+                )
+                findings.append(
+                    {
+                        "Service": "IAM",
+                        "Region": "global",
+                        "ResourceID": "RootAccount",
+                        "ResourceName": "AWS Root Account",
+                        "Status": "FAIL",
+                        "Finding": "Root account has active access keys (delete immediately)",
+                        "Severity": "Critical",
+                        "RemediationStatus": "Manual Intervention Required",
+                    }
+                )
         except ClientError as e:
             logger.error(f"Error checking IAM account summary for root account: {e}")
-            findings.append({
-                "Service": "IAM",
-                "Region": "global",
-                "ResourceID": "RootAccount",
-                "ResourceName": "AWS Root Account",
-                "Status": "ERROR",
-                "Finding": f"Failed to retrieve account summary: {e.response['Error']['Message']}",
-                "Severity": "Medium",
-                "RemediationStatus": "N/A"
-            })
+            findings.append(
+                {
+                    "Service": "IAM",
+                    "Region": "global",
+                    "ResourceID": "RootAccount",
+                    "ResourceName": "AWS Root Account",
+                    "Status": "ERROR",
+                    "Finding": f"Failed to retrieve account summary: {e.response['Error']['Message']}",
+                    "Severity": "Medium",
+                    "RemediationStatus": "N/A",
+                }
+            )
         return self._apply_severity_overrides(findings)
 
     def audit_iam_password_policy(self):
         """Audits the account-wide IAM Password Policy against security baselines."""
         logger.info("Auditing IAM Password Policy...")
-        policy_config = self.config.get('iam', {}).get('password_policy', {})
+        policy_config = self.config.get("iam", {}).get("password_policy", {})
         findings = []
 
         try:
-            policy = self.iam_client.get_account_password_policy().get('PasswordPolicy', {})
+            policy = self.iam_client.get_account_password_policy().get("PasswordPolicy", {})
 
             # Map of config key to policy attribute and readable name
             checks = {
-                'minimum_length': ('MinimumPasswordLength', 'Minimum Length'),
-                'require_symbols': ('RequireSymbols', 'Require Symbols'),
-                'require_numbers': ('RequireNumbers', 'Require Numbers'),
-                'require_uppercase': ('RequireUppercaseCharacters', 'Require Uppercase'),
-                'require_lowercase': ('RequireLowercaseCharacters', 'Require Lowercase'),
-                'max_password_age_days': ('MaxPasswordAge', 'Max Password Age'),
-                'password_reuse_prevention': ('PasswordReusePrevention', 'Password Reuse Prevention'),
-                'hard_expiry': ('HardExpiry', 'Hard Expiry')
+                "minimum_length": ("MinimumPasswordLength", "Minimum Length"),
+                "require_symbols": ("RequireSymbols", "Require Symbols"),
+                "require_numbers": ("RequireNumbers", "Require Numbers"),
+                "require_uppercase": ("RequireUppercaseCharacters", "Require Uppercase"),
+                "require_lowercase": ("RequireLowercaseCharacters", "Require Lowercase"),
+                "max_password_age_days": ("MaxPasswordAge", "Max Password Age"),
+                "password_reuse_prevention": (
+                    "PasswordReusePrevention",
+                    "Password Reuse Prevention",
+                ),
+                "hard_expiry": ("HardExpiry", "Hard Expiry"),
             }
 
             failures = []
@@ -728,16 +853,16 @@ class AWSSentinelAuditor:
                     continue
 
                 actual = policy.get(policy_attr)
-                if config_key == 'minimum_length':
+                if config_key == "minimum_length":
                     if actual is None or actual < expected:
                         failures.append(f"{name} (Expected: >= {expected}, Actual: {actual})")
-                elif config_key == 'max_password_age_days':
+                elif config_key == "max_password_age_days":
                     if actual is None or actual > expected:
                         failures.append(f"{name} (Expected: <= {expected}, Actual: {actual})")
-                elif config_key == 'password_reuse_prevention':
+                elif config_key == "password_reuse_prevention":
                     if actual is None or actual < expected:
                         failures.append(f"{name} (Expected: >= {expected}, Actual: {actual})")
-                elif config_key == 'hard_expiry':
+                elif config_key == "hard_expiry":
                     if actual is None or actual != expected:
                         failures.append(f"{name} (Expected: {expected}, Actual: {actual})")
                 else:
@@ -746,54 +871,62 @@ class AWSSentinelAuditor:
 
             if failures:
                 logger.warning(f"❌ IAM Password Policy is not compliant: {', '.join(failures)}!")
-                findings.append({
-                    "Service": "IAM",
-                    "Region": "global",
-                    "ResourceID": "AccountPasswordPolicy",
-                    "ResourceName": "Account Password Policy",
-                    "Status": "FAIL",
-                    "Finding": f"Password policy is non-compliant: {', '.join(failures)}",
-                    "Severity": "Medium",
-                    "RemediationStatus": "Manual Intervention Required"
-                })
+                findings.append(
+                    {
+                        "Service": "IAM",
+                        "Region": "global",
+                        "ResourceID": "AccountPasswordPolicy",
+                        "ResourceName": "Account Password Policy",
+                        "Status": "FAIL",
+                        "Finding": f"Password policy is non-compliant: {', '.join(failures)}",
+                        "Severity": "Medium",
+                        "RemediationStatus": "Manual Intervention Required",
+                    }
+                )
             else:
                 logger.info("✅ IAM Password Policy is compliant with security baseline settings.")
-                findings.append({
-                    "Service": "IAM",
-                    "Region": "global",
-                    "ResourceID": "AccountPasswordPolicy",
-                    "ResourceName": "Account Password Policy",
-                    "Status": "PASS",
-                    "Finding": "Password policy is compliant with baseline settings",
-                    "Severity": "Low",
-                    "RemediationStatus": "N/A"
-                })
+                findings.append(
+                    {
+                        "Service": "IAM",
+                        "Region": "global",
+                        "ResourceID": "AccountPasswordPolicy",
+                        "ResourceName": "Account Password Policy",
+                        "Status": "PASS",
+                        "Finding": "Password policy is compliant with baseline settings",
+                        "Severity": "Low",
+                        "RemediationStatus": "N/A",
+                    }
+                )
 
         except ClientError as e:
-            if e.response['Error']['Code'] == 'NoSuchEntity':
+            if e.response["Error"]["Code"] == "NoSuchEntity":
                 logger.warning("❌ IAM Password Policy is NOT defined for this account!")
-                findings.append({
-                    "Service": "IAM",
-                    "Region": "global",
-                    "ResourceID": "AccountPasswordPolicy",
-                    "ResourceName": "Account Password Policy",
-                    "Status": "FAIL",
-                    "Finding": "No IAM password policy is defined for this AWS account",
-                    "Severity": "High",
-                    "RemediationStatus": "Manual Intervention Required"
-                })
+                findings.append(
+                    {
+                        "Service": "IAM",
+                        "Region": "global",
+                        "ResourceID": "AccountPasswordPolicy",
+                        "ResourceName": "Account Password Policy",
+                        "Status": "FAIL",
+                        "Finding": "No IAM password policy is defined for this AWS account",
+                        "Severity": "High",
+                        "RemediationStatus": "Manual Intervention Required",
+                    }
+                )
             else:
                 logger.error(f"Error retrieving IAM Password Policy: {e}")
-                findings.append({
-                    "Service": "IAM",
-                    "Region": "global",
-                    "ResourceID": "AccountPasswordPolicy",
-                    "ResourceName": "Account Password Policy",
-                    "Status": "ERROR",
-                    "Finding": f"Failed to retrieve password policy: {e.response['Error']['Message']}",
-                    "Severity": "Medium",
-                    "RemediationStatus": "N/A"
-                })
+                findings.append(
+                    {
+                        "Service": "IAM",
+                        "Region": "global",
+                        "ResourceID": "AccountPasswordPolicy",
+                        "ResourceName": "Account Password Policy",
+                        "Status": "ERROR",
+                        "Finding": f"Failed to retrieve password policy: {e.response['Error']['Message']}",
+                        "Severity": "Medium",
+                        "RemediationStatus": "N/A",
+                    }
+                )
         return self._apply_severity_overrides(findings)
 
     def audit_security_groups(self, regions, remediate=False):
@@ -804,182 +937,226 @@ class AWSSentinelAuditor:
         for region in regions:
             logger.info(f"Scanning EC2 Security Groups in region: {region}...")
             try:
-                regional_ec2 = self.session.client('ec2', region_name=region, config=self.botocore_config)
-                paginator = regional_ec2.get_paginator('describe_security_groups')
+                regional_ec2 = self.session.client(
+                    "ec2", region_name=region, config=self.botocore_config
+                )
+                paginator = regional_ec2.get_paginator("describe_security_groups")
                 pages = paginator.paginate()
             except ClientError as e:
                 logger.error(f"Failed to scan EC2 Security Groups in region {region}: {e}")
                 continue
 
             for page in pages:
-                for sg in page.get('SecurityGroups', []):
-                    group_id = sg['GroupId']
-                    group_name = sg['GroupName']
+                for sg in page.get("SecurityGroups", []):
+                    group_id = sg["GroupId"]
+                    group_name = sg["GroupName"]
                     failed_ports = set()
 
-                    ports_to_check = self.config.get('ec2', {}).get('ports_to_check', [
-                        {"port": 22, "protocol": "tcp", "severity": "Critical"}
-                    ])
+                    ports_to_check = self.config.get("ec2", {}).get(
+                        "ports_to_check", [{"port": 22, "protocol": "tcp", "severity": "Critical"}]
+                    )
 
-                    for rule in sg.get('IpPermissions', []):
-                        from_port = rule.get('FromPort')
-                        to_port = rule.get('ToPort')
-                        ip_protocol = rule.get('IpProtocol')
+                    for rule in sg.get("IpPermissions", []):
+                        from_port = rule.get("FromPort")
+                        to_port = rule.get("ToPort")
+                        ip_protocol = rule.get("IpProtocol")
 
                         # 1. Check for "All Traffic" (-1 protocol) exposed to the public internet
                         is_all_traffic_public = False
-                        if ip_protocol == '-1':
-                            for ip in rule.get('IpRanges', []):
-                                if ip.get('CidrIp') == '0.0.0.0/0':
+                        if ip_protocol == "-1":
+                            for ip in rule.get("IpRanges", []):
+                                if ip.get("CidrIp") == "0.0.0.0/0":
                                     is_all_traffic_public = True
-                            for ipv6 in rule.get('Ipv6Ranges', []):
-                                if ipv6.get('CidrIpv6') == '::/0':
+                            for ipv6 in rule.get("Ipv6Ranges", []):
+                                if ipv6.get("CidrIpv6") == "::/0":
                                     is_all_traffic_public = True
 
                         if is_all_traffic_public:
-                            logger.warning(f"❌ SG {group_name} ({group_id}) [{region}]: ALL TRAFFIC is open to the public internet!")
+                            logger.warning(
+                                f"❌ SG {group_name} ({group_id}) [{region}]: ALL TRAFFIC is open to the public internet!"
+                            )
                             for target in ports_to_check:
-                                failed_ports.add(target.get('port'))
+                                failed_ports.add(target.get("port"))
 
                             all_traffic_rem_status = "N/A"
                             if remediate:
                                 if self.dry_run:
-                                    logger.info(f"[DRY-RUN] Would revoke ALL TRAFFIC open rule for SG {group_name} ({group_id})")
+                                    logger.info(
+                                        f"[DRY-RUN] Would revoke ALL TRAFFIC open rule for SG {group_name} ({group_id})"
+                                    )
                                     all_traffic_rem_status = "Dry-Run: Revoke All Traffic open rule"
                                 else:
                                     try:
-                                        logger.info(f"Remediating SG {group_name} ({group_id}): Revoking ALL TRAFFIC public ingress rule...")
-                                        rule_to_revoke = {'IpProtocol': '-1'}
-                                        ip_ranges = [{'CidrIp': '0.0.0.0/0'}] if any(ip.get('CidrIp') == '0.0.0.0/0' for ip in rule.get('IpRanges', [])) else []
-                                        ipv6_ranges = [{'CidrIpv6': '::/0'}] if any(ipv6.get('CidrIpv6') == '::/0' for ipv6 in rule.get('Ipv6Ranges', [])) else []
+                                        logger.info(
+                                            f"Remediating SG {group_name} ({group_id}): Revoking ALL TRAFFIC public ingress rule..."
+                                        )
+                                        rule_to_revoke = {"IpProtocol": "-1"}
+                                        ip_ranges = (
+                                            [{"CidrIp": "0.0.0.0/0"}]
+                                            if any(
+                                                ip.get("CidrIp") == "0.0.0.0/0"
+                                                for ip in rule.get("IpRanges", [])
+                                            )
+                                            else []
+                                        )
+                                        ipv6_ranges = (
+                                            [{"CidrIpv6": "::/0"}]
+                                            if any(
+                                                ipv6.get("CidrIpv6") == "::/0"
+                                                for ipv6 in rule.get("Ipv6Ranges", [])
+                                            )
+                                            else []
+                                        )
                                         if ip_ranges:
-                                            rule_to_revoke['IpRanges'] = ip_ranges
+                                            rule_to_revoke["IpRanges"] = ip_ranges
                                         if ipv6_ranges:
-                                            rule_to_revoke['Ipv6Ranges'] = ipv6_ranges
+                                            rule_to_revoke["Ipv6Ranges"] = ipv6_ranges
 
                                         regional_ec2.revoke_security_group_ingress(
-                                            GroupId=group_id,
-                                            IpPermissions=[rule_to_revoke]
+                                            GroupId=group_id, IpPermissions=[rule_to_revoke]
                                         )
-                                        logger.info(f"✅ SG {group_name} ({group_id}): Successfully Remediated All Traffic rule")
+                                        logger.info(
+                                            f"✅ SG {group_name} ({group_id}): Successfully Remediated All Traffic rule"
+                                        )
                                         all_traffic_rem_status = "Remediated"
                                     except ClientError as re:
-                                        logger.error(f"Failed to remediate SG {group_name} ({group_id}) for All Traffic: {re}")
-                                        all_traffic_rem_status = f"Remediation Failed: {re.response['Error']['Message']}"
+                                        logger.error(
+                                            f"Failed to remediate SG {group_name} ({group_id}) for All Traffic: {re}"
+                                        )
+                                        all_traffic_rem_status = (
+                                            f"Remediation Failed: {re.response['Error']['Message']}"
+                                        )
                             else:
                                 all_traffic_rem_status = "None (Remediation not requested)"
 
-                            findings.append({
-                                "Service": "EC2",
-                                "Region": region,
-                                "ResourceID": group_id,
-                                "ResourceName": group_name,
-                                "Status": "FAIL",
-                                "Finding": "Security Group allows all traffic/protocols from the public internet (0.0.0.0/0 or ::/0)",
-                                "Severity": "Critical",
-                                "RemediationStatus": all_traffic_rem_status
-                            })
+                            findings.append(
+                                {
+                                    "Service": "EC2",
+                                    "Region": region,
+                                    "ResourceID": group_id,
+                                    "ResourceName": group_name,
+                                    "Status": "FAIL",
+                                    "Finding": "Security Group allows all traffic/protocols from the public internet (0.0.0.0/0 or ::/0)",
+                                    "Severity": "Critical",
+                                    "RemediationStatus": all_traffic_rem_status,
+                                }
+                            )
                             continue
 
                         for target in ports_to_check:
-                            target_port = target.get('port')
-                            target_proto = target.get('protocol', 'tcp')
-                            target_severity = target.get('severity', 'High')
+                            target_port = target.get("port")
+                            target_proto = target.get("protocol", "tcp")
+                            target_severity = target.get("severity", "High")
 
                             port_exposed = False
                             # Check if protocol matches or rule protocol is all ('-1')
-                            protocol_match = (ip_protocol == '-1') or (ip_protocol == target_proto)
+                            protocol_match = (ip_protocol == "-1") or (ip_protocol == target_proto)
 
                             if protocol_match:
                                 if from_port is not None and to_port is not None:
                                     if from_port <= target_port <= to_port:
                                         port_exposed = True
-                                elif ip_protocol == '-1':
+                                elif ip_protocol == "-1":
                                     port_exposed = True
 
                             if port_exposed:
                                 is_public = False
-                                for ip in rule.get('IpRanges', []):
-                                    if ip.get('CidrIp') == '0.0.0.0/0':
+                                for ip in rule.get("IpRanges", []):
+                                    if ip.get("CidrIp") == "0.0.0.0/0":
                                         is_public = True
-                                for ipv6 in rule.get('Ipv6Ranges', []):
-                                    if ipv6.get('CidrIpv6') == '::/0':
+                                for ipv6 in rule.get("Ipv6Ranges", []):
+                                    if ipv6.get("CidrIpv6") == "::/0":
                                         is_public = True
 
                                 if is_public:
-                                    logger.warning(f"❌ SG {group_name} ({group_id}) [{region}]: Port {target_port} ({target_proto}) is OPEN to everyone!")
+                                    logger.warning(
+                                        f"❌ SG {group_name} ({group_id}) [{region}]: Port {target_port} ({target_proto}) is OPEN to everyone!"
+                                    )
                                     failed_ports.add(target_port)
 
                                     remediation_status = "N/A"
                                     if remediate:
                                         if self.dry_run:
-                                            logger.info(f"[DRY-RUN] Would revoke Port {target_port} open rule for SG {group_name} ({group_id})")
-                                            remediation_status = f"Dry-Run: Revoke Port {target_port} open to public"
+                                            logger.info(
+                                                f"[DRY-RUN] Would revoke Port {target_port} open rule for SG {group_name} ({group_id})"
+                                            )
+                                            remediation_status = (
+                                                f"Dry-Run: Revoke Port {target_port} open to public"
+                                            )
                                         else:
                                             try:
-                                                logger.info(f"Remediating SG {group_name} ({group_id}): Revoking Port {target_port} public ingress rule...")
+                                                logger.info(
+                                                    f"Remediating SG {group_name} ({group_id}): Revoking Port {target_port} public ingress rule..."
+                                                )
                                                 # Build exact rule to revoke
                                                 rule_to_revoke = {
-                                                    'IpProtocol': rule.get('IpProtocol'),
-                                                    'FromPort': rule.get('FromPort'),
-                                                    'ToPort': rule.get('ToPort'),
+                                                    "IpProtocol": rule.get("IpProtocol"),
+                                                    "FromPort": rule.get("FromPort"),
+                                                    "ToPort": rule.get("ToPort"),
                                                 }
                                                 if from_port is None:
-                                                    del rule_to_revoke['FromPort']
+                                                    del rule_to_revoke["FromPort"]
                                                 if to_port is None:
-                                                    del rule_to_revoke['ToPort']
+                                                    del rule_to_revoke["ToPort"]
 
                                                 ip_ranges = []
                                                 ipv6_ranges = []
-                                                for ip in rule.get('IpRanges', []):
-                                                    if ip.get('CidrIp') == '0.0.0.0/0':
-                                                        ip_ranges.append({'CidrIp': '0.0.0.0/0'})
-                                                for ipv6 in rule.get('Ipv6Ranges', []):
-                                                    if ipv6.get('CidrIpv6') == '::/0':
-                                                        ipv6_ranges.append({'CidrIpv6': '::/0'})
+                                                for ip in rule.get("IpRanges", []):
+                                                    if ip.get("CidrIp") == "0.0.0.0/0":
+                                                        ip_ranges.append({"CidrIp": "0.0.0.0/0"})
+                                                for ipv6 in rule.get("Ipv6Ranges", []):
+                                                    if ipv6.get("CidrIpv6") == "::/0":
+                                                        ipv6_ranges.append({"CidrIpv6": "::/0"})
 
                                                 if ip_ranges:
-                                                    rule_to_revoke['IpRanges'] = ip_ranges
+                                                    rule_to_revoke["IpRanges"] = ip_ranges
                                                 if ipv6_ranges:
-                                                    rule_to_revoke['Ipv6Ranges'] = ipv6_ranges
+                                                    rule_to_revoke["Ipv6Ranges"] = ipv6_ranges
 
                                                 regional_ec2.revoke_security_group_ingress(
-                                                    GroupId=group_id,
-                                                    IpPermissions=[rule_to_revoke]
+                                                    GroupId=group_id, IpPermissions=[rule_to_revoke]
                                                 )
-                                                logger.info(f"✅ SG {group_name} ({group_id}): Successfully Remediated Port {target_port}")
+                                                logger.info(
+                                                    f"✅ SG {group_name} ({group_id}): Successfully Remediated Port {target_port}"
+                                                )
                                                 remediation_status = "Remediated"
                                             except ClientError as re:
-                                                logger.error(f"Failed to remediate SG {group_name} ({group_id}) for Port {target_port}: {re}")
+                                                logger.error(
+                                                    f"Failed to remediate SG {group_name} ({group_id}) for Port {target_port}: {re}"
+                                                )
                                                 remediation_status = f"Remediation Failed: {re.response['Error']['Message']}"
                                     else:
                                         remediation_status = "None (Remediation not requested)"
 
-                                    findings.append({
-                                        "Service": "EC2",
-                                        "Region": region,
-                                        "ResourceID": group_id,
-                                        "ResourceName": group_name,
-                                        "Status": "FAIL",
-                                        "Finding": f"Port {target_port} ({target_proto.upper()}) is open to the public internet (0.0.0.0/0 or ::/0)",
-                                        "Severity": target_severity,
-                                        "RemediationStatus": remediation_status
-                                    })
+                                    findings.append(
+                                        {
+                                            "Service": "EC2",
+                                            "Region": region,
+                                            "ResourceID": group_id,
+                                            "ResourceName": group_name,
+                                            "Status": "FAIL",
+                                            "Finding": f"Port {target_port} ({target_proto.upper()}) is open to the public internet (0.0.0.0/0 or ::/0)",
+                                            "Severity": target_severity,
+                                            "RemediationStatus": remediation_status,
+                                        }
+                                    )
 
                     for target in ports_to_check:
-                        target_port = target.get('port')
-                        target_proto = target.get('protocol', 'tcp')
+                        target_port = target.get("port")
+                        target_proto = target.get("protocol", "tcp")
                         if target_port not in failed_ports:
-                            findings.append({
-                                "Service": "EC2",
-                                "Region": region,
-                                "ResourceID": group_id,
-                                "ResourceName": group_name,
-                                "Status": "PASS",
-                                "Finding": f"Port {target_port} ({target_proto.upper()}) is restricted",
-                                "Severity": "Low",
-                                "RemediationStatus": "N/A"
-                            })
+                            findings.append(
+                                {
+                                    "Service": "EC2",
+                                    "Region": region,
+                                    "ResourceID": group_id,
+                                    "ResourceName": group_name,
+                                    "Status": "PASS",
+                                    "Finding": f"Port {target_port} ({target_proto.upper()}) is restricted",
+                                    "Severity": "Low",
+                                    "RemediationStatus": "N/A",
+                                }
+                            )
         return self._apply_severity_overrides(findings)
 
     def audit_ebs(self, regions, remediate=False):
@@ -990,7 +1167,9 @@ class AWSSentinelAuditor:
         for region in regions:
             logger.info(f"Scanning EBS in region: {region}...")
             try:
-                regional_ec2 = self.session.client('ec2', region_name=region, config=self.botocore_config)
+                regional_ec2 = self.session.client(
+                    "ec2", region_name=region, config=self.botocore_config
+                )
             except ClientError as e:
                 logger.error(f"Failed to initialize EC2 client in region {region}: {e}")
                 continue
@@ -999,92 +1178,112 @@ class AWSSentinelAuditor:
             ebs_remediation_status = "N/A"
             try:
                 ebs_status = regional_ec2.get_ebs_encryption_by_default()
-                is_enabled = ebs_status.get('EbsEncryptionByDefault', False)
+                is_enabled = ebs_status.get("EbsEncryptionByDefault", False)
                 if is_enabled:
                     logger.info(f"✅ EBS: Encryption by Default is ENABLED in {region}")
-                    findings.append({
-                        "Service": "EBS",
-                        "Region": region,
-                        "ResourceID": f"EbsEncryptionByDefault-{region}",
-                        "ResourceName": "EBS Encryption by Default",
-                        "Status": "PASS",
-                        "Finding": "EBS Encryption by Default is enabled in this region",
-                        "Severity": "Low",
-                        "RemediationStatus": ebs_remediation_status
-                    })
+                    findings.append(
+                        {
+                            "Service": "EBS",
+                            "Region": region,
+                            "ResourceID": f"EbsEncryptionByDefault-{region}",
+                            "ResourceName": "EBS Encryption by Default",
+                            "Status": "PASS",
+                            "Finding": "EBS Encryption by Default is enabled in this region",
+                            "Severity": "Low",
+                            "RemediationStatus": ebs_remediation_status,
+                        }
+                    )
                 else:
                     logger.warning(f"❌ EBS: Encryption by Default is DISABLED in {region}!")
                     if remediate:
                         if self.dry_run:
-                            logger.info(f"[DRY-RUN] Would enable EBS Encryption by Default in region {region}")
+                            logger.info(
+                                f"[DRY-RUN] Would enable EBS Encryption by Default in region {region}"
+                            )
                             ebs_remediation_status = "Dry-Run: Enable EBS Encryption by Default"
                         else:
                             try:
-                                logger.info(f"Remediating EBS in region {region}: Enabling Encryption by Default...")
+                                logger.info(
+                                    f"Remediating EBS in region {region}: Enabling Encryption by Default..."
+                                )
                                 regional_ec2.enable_ebs_encryption_by_default()
                                 logger.info(f"✅ EBS: Encryption by Default enabled in {region}")
                                 ebs_remediation_status = "Remediated"
                             except ClientError as re:
-                                logger.error(f"Failed to enable EBS Encryption by Default in region {region}: {re}")
-                                ebs_remediation_status = f"Remediation Failed: {re.response['Error']['Message']}"
+                                logger.error(
+                                    f"Failed to enable EBS Encryption by Default in region {region}: {re}"
+                                )
+                                ebs_remediation_status = (
+                                    f"Remediation Failed: {re.response['Error']['Message']}"
+                                )
                     else:
                         ebs_remediation_status = "None (Remediation not requested)"
 
-                    findings.append({
+                    findings.append(
+                        {
+                            "Service": "EBS",
+                            "Region": region,
+                            "ResourceID": f"EbsEncryptionByDefault-{region}",
+                            "ResourceName": "EBS Encryption by Default",
+                            "Status": "FAIL",
+                            "Finding": "EBS Encryption by Default is disabled in this region",
+                            "Severity": "Medium",
+                            "RemediationStatus": ebs_remediation_status,
+                        }
+                    )
+            except ClientError as e:
+                logger.error(f"Error checking EBS encryption by default in region {region}: {e}")
+                findings.append(
+                    {
                         "Service": "EBS",
                         "Region": region,
                         "ResourceID": f"EbsEncryptionByDefault-{region}",
                         "ResourceName": "EBS Encryption by Default",
-                        "Status": "FAIL",
-                        "Finding": "EBS Encryption by Default is disabled in this region",
+                        "Status": "ERROR",
+                        "Finding": f"Failed to retrieve EBS encryption status: {e.response['Error']['Message']}",
                         "Severity": "Medium",
-                        "RemediationStatus": ebs_remediation_status
-                    })
-            except ClientError as e:
-                logger.error(f"Error checking EBS encryption by default in region {region}: {e}")
-                findings.append({
-                    "Service": "EBS",
-                    "Region": region,
-                    "ResourceID": f"EbsEncryptionByDefault-{region}",
-                    "ResourceName": "EBS Encryption by Default",
-                    "Status": "ERROR",
-                    "Finding": f"Failed to retrieve EBS encryption status: {e.response['Error']['Message']}",
-                    "Severity": "Medium",
-                    "RemediationStatus": "N/A"
-                })
+                        "RemediationStatus": "N/A",
+                    }
+                )
 
             # 2. Auditing Individual Volumes
             try:
-                paginator = regional_ec2.get_paginator('describe_volumes')
+                paginator = regional_ec2.get_paginator("describe_volumes")
                 pages = paginator.paginate()
                 for page in pages:
-                    for vol in page.get('Volumes', []):
-                        vol_id = vol['VolumeId']
-                        encrypted = vol.get('Encrypted', False)
+                    for vol in page.get("Volumes", []):
+                        vol_id = vol["VolumeId"]
+                        encrypted = vol.get("Encrypted", False)
                         if encrypted:
                             logger.info(f"✅ EBS Volume '{vol_id}' [{region}]: Secure (Encrypted)")
-                            findings.append({
-                                "Service": "EBS",
-                                "Region": region,
-                                "ResourceID": vol_id,
-                                "ResourceName": vol_id,
-                                "Status": "PASS",
-                                "Finding": "EBS Volume is encrypted",
-                                "Severity": "Low",
-                                "RemediationStatus": "N/A"
-                            })
+                            findings.append(
+                                {
+                                    "Service": "EBS",
+                                    "Region": region,
+                                    "ResourceID": vol_id,
+                                    "ResourceName": vol_id,
+                                    "Status": "PASS",
+                                    "Finding": "EBS Volume is encrypted",
+                                    "Severity": "Low",
+                                    "RemediationStatus": "N/A",
+                                }
+                            )
                         else:
-                            logger.warning(f"❌ EBS Volume '{vol_id}' [{region}]: WARNING - Volume is NOT encrypted!")
-                            findings.append({
-                                "Service": "EBS",
-                                "Region": region,
-                                "ResourceID": vol_id,
-                                "ResourceName": vol_id,
-                                "Status": "FAIL",
-                                "Finding": "EBS Volume is not encrypted",
-                                "Severity": "High",
-                                "RemediationStatus": "Manual Intervention Required"
-                            })
+                            logger.warning(
+                                f"❌ EBS Volume '{vol_id}' [{region}]: WARNING - Volume is NOT encrypted!"
+                            )
+                            findings.append(
+                                {
+                                    "Service": "EBS",
+                                    "Region": region,
+                                    "ResourceID": vol_id,
+                                    "ResourceName": vol_id,
+                                    "Status": "FAIL",
+                                    "Finding": "EBS Volume is not encrypted",
+                                    "Severity": "High",
+                                    "RemediationStatus": "Manual Intervention Required",
+                                }
+                            )
             except ClientError as e:
                 logger.error(f"Error describing EBS volumes in region {region}: {e}")
         return self._apply_severity_overrides(findings)
@@ -1097,67 +1296,89 @@ class AWSSentinelAuditor:
         for region in regions:
             logger.info(f"Scanning KMS CMKs in region: {region}...")
             try:
-                regional_kms = self.session.client('kms', region_name=region, config=self.botocore_config)
+                regional_kms = self.session.client(
+                    "kms", region_name=region, config=self.botocore_config
+                )
                 # List KMS keys in the region
-                paginator = regional_kms.get_paginator('list_keys')
+                paginator = regional_kms.get_paginator("list_keys")
                 pages = paginator.paginate()
             except ClientError as e:
                 logger.error(f"Failed to scan KMS keys in region {region}: {e}")
                 continue
 
             for page in pages:
-                for key_entry in page.get('Keys', []):
-                    key_id = key_entry['KeyId']
+                for key_entry in page.get("Keys", []):
+                    key_id = key_entry["KeyId"]
                     try:
-                        key_details = regional_kms.describe_key(KeyId=key_id).get('KeyMetadata', {})
+                        key_details = regional_kms.describe_key(KeyId=key_id).get("KeyMetadata", {})
                         # Only audit Customer Managed Keys (CMKs) that are enabled
-                        if key_details.get('KeyManager') == 'CUSTOMER' and key_details.get('Enabled', False):
+                        if key_details.get("KeyManager") == "CUSTOMER" and key_details.get(
+                            "Enabled", False
+                        ):
                             rotation_status = regional_kms.get_key_rotation_status(KeyId=key_id)
-                            rotation_enabled = rotation_status.get('KeyRotationEnabled', False)
+                            rotation_enabled = rotation_status.get("KeyRotationEnabled", False)
 
                             remediation_status = "N/A"
                             if rotation_enabled:
-                                logger.info(f"✅ KMS Key '{key_id}' [{region}]: Secure (Rotation Enabled)")
-                                findings.append({
-                                    "Service": "KMS",
-                                    "Region": region,
-                                    "ResourceID": key_id,
-                                    "ResourceName": key_details.get('Description', 'KMS CMK'),
-                                    "Status": "PASS",
-                                    "Finding": "KMS Customer Managed Key rotation is enabled",
-                                    "Severity": "Low",
-                                    "RemediationStatus": remediation_status
-                                })
+                                logger.info(
+                                    f"✅ KMS Key '{key_id}' [{region}]: Secure (Rotation Enabled)"
+                                )
+                                findings.append(
+                                    {
+                                        "Service": "KMS",
+                                        "Region": region,
+                                        "ResourceID": key_id,
+                                        "ResourceName": key_details.get("Description", "KMS CMK"),
+                                        "Status": "PASS",
+                                        "Finding": "KMS Customer Managed Key rotation is enabled",
+                                        "Severity": "Low",
+                                        "RemediationStatus": remediation_status,
+                                    }
+                                )
                             else:
-                                logger.warning(f"❌ KMS Key '{key_id}' [{region}]: WARNING - Key Rotation is DISABLED!")
+                                logger.warning(
+                                    f"❌ KMS Key '{key_id}' [{region}]: WARNING - Key Rotation is DISABLED!"
+                                )
                                 if remediate:
                                     if self.dry_run:
-                                        logger.info(f"[DRY-RUN] Would enable key rotation for KMS CMK '{key_id}'")
+                                        logger.info(
+                                            f"[DRY-RUN] Would enable key rotation for KMS CMK '{key_id}'"
+                                        )
                                         remediation_status = "Dry-Run: Enable KMS Key Rotation"
                                     else:
                                         try:
-                                            logger.info(f"Remediating KMS Key '{key_id}': Enabling rotation...")
+                                            logger.info(
+                                                f"Remediating KMS Key '{key_id}': Enabling rotation..."
+                                            )
                                             regional_kms.enable_key_rotation(KeyId=key_id)
-                                            logger.info(f"✅ KMS Key '{key_id}': Rotation successfully enabled")
+                                            logger.info(
+                                                f"✅ KMS Key '{key_id}': Rotation successfully enabled"
+                                            )
                                             remediation_status = "Remediated"
                                         except ClientError as re:
-                                            logger.error(f"Failed to enable rotation for KMS Key '{key_id}': {re}")
+                                            logger.error(
+                                                f"Failed to enable rotation for KMS Key '{key_id}': {re}"
+                                            )
                                             remediation_status = f"Remediation Failed: {re.response['Error']['Message']}"
                                 else:
                                     remediation_status = "None (Remediation not requested)"
 
-                                findings.append({
-                                    "Service": "KMS",
-                                    "Region": region,
-                                    "ResourceID": key_id,
-                                    "ResourceName": key_details.get('Description', 'KMS CMK'),
-                                    "Status": "FAIL",
-                                    "Finding": "KMS Customer Managed Key rotation is disabled",
-                                    "Severity": "Medium",
-                                    "RemediationStatus": remediation_status
-                                })
+                                findings.append(
+                                    {
+                                        "Service": "KMS",
+                                        "Region": region,
+                                        "ResourceID": key_id,
+                                        "ResourceName": key_details.get("Description", "KMS CMK"),
+                                        "Status": "FAIL",
+                                        "Finding": "KMS Customer Managed Key rotation is disabled",
+                                        "Severity": "Medium",
+                                        "RemediationStatus": remediation_status,
+                                    }
+                                )
                     except ClientError as e:
-                        logger.error(f"Error checking KMS key '{key_id}' details/rotation status: {e}")
+                        logger.error(
+                            f"Error checking KMS key '{key_id}' details/rotation status: {e}"
+                        )
         return self._apply_severity_overrides(findings)
 
     def audit_cloudtrail(self):
@@ -1166,34 +1387,38 @@ class AWSSentinelAuditor:
         logger.info("Starting CloudTrail logging compliance audit...")
 
         try:
-            default_region = self.session.region_name or 'us-east-1'
-            ct_client = self.session.client('cloudtrail', region_name=default_region, config=self.botocore_config)
-            trails = ct_client.describe_trails(includeShadowTrails=True).get('trailList', [])
+            default_region = self.session.region_name or "us-east-1"
+            ct_client = self.session.client(
+                "cloudtrail", region_name=default_region, config=self.botocore_config
+            )
+            trails = ct_client.describe_trails(includeShadowTrails=True).get("trailList", [])
         except ClientError as e:
             logger.error(f"Failed to describe CloudTrails: {e}")
-            findings.append({
-                "Service": "CloudTrail",
-                "Region": "global",
-                "ResourceID": "CloudTrailLoggingStatus",
-                "ResourceName": "AWS CloudTrail",
-                "Status": "ERROR",
-                "Finding": f"Failed to retrieve CloudTrail trails: {e.response['Error']['Message']}",
-                "Severity": "Medium",
-                "RemediationStatus": "N/A"
-            })
+            findings.append(
+                {
+                    "Service": "CloudTrail",
+                    "Region": "global",
+                    "ResourceID": "CloudTrailLoggingStatus",
+                    "ResourceName": "AWS CloudTrail",
+                    "Status": "ERROR",
+                    "Finding": f"Failed to retrieve CloudTrail trails: {e.response['Error']['Message']}",
+                    "Severity": "Medium",
+                    "RemediationStatus": "N/A",
+                }
+            )
             return findings
 
         has_active_multi_region_trail = False
         active_trail_name = ""
 
         for trail in trails:
-            trail_name = trail.get('Name')
-            trail_arn = trail.get('TrailARN')
-            is_multi_region = trail.get('IsMultiRegionTrail', False)
+            trail_name = trail.get("Name")
+            trail_arn = trail.get("TrailARN")
+            is_multi_region = trail.get("IsMultiRegionTrail", False)
 
             try:
                 status_resp = ct_client.get_trail_status(Name=trail_arn)
-                is_logging = status_resp.get('IsLogging', False)
+                is_logging = status_resp.get("IsLogging", False)
                 if is_logging and is_multi_region:
                     has_active_multi_region_trail = True
                     active_trail_name = trail_name
@@ -1202,31 +1427,40 @@ class AWSSentinelAuditor:
                 logger.error(f"Failed to get trail status for '{trail_name}': {e}")
 
         if has_active_multi_region_trail:
-            logger.info(f"✅ CloudTrail: Compliant active multi-region trail '{active_trail_name}' found.")
-            findings.append({
-                "Service": "CloudTrail",
-                "Region": "global",
-                "ResourceID": "CloudTrailLoggingStatus",
-                "ResourceName": "AWS CloudTrail",
-                "Status": "PASS",
-                "Finding": f"Compliant active multi-region CloudTrail '{active_trail_name}' is enabled",
-                "Severity": "Low",
-                "RemediationStatus": "N/A"
-            })
+            logger.info(
+                f"✅ CloudTrail: Compliant active multi-region trail '{active_trail_name}' found."
+            )
+            findings.append(
+                {
+                    "Service": "CloudTrail",
+                    "Region": "global",
+                    "ResourceID": "CloudTrailLoggingStatus",
+                    "ResourceName": "AWS CloudTrail",
+                    "Status": "PASS",
+                    "Finding": f"Compliant active multi-region CloudTrail '{active_trail_name}' is enabled",
+                    "Severity": "Low",
+                    "RemediationStatus": "N/A",
+                }
+            )
         else:
-            logger.warning("❌ CloudTrail: No active multi-region logging trail found in the account!")
-            findings.append({
-                "Service": "CloudTrail",
-                "Region": "global",
-                "ResourceID": "CloudTrailLoggingStatus",
-                "ResourceName": "AWS CloudTrail",
-                "Status": "FAIL",
-                "Finding": "No active multi-region CloudTrail trail logging is enabled in the account",
-                "Severity": "High",
-                "RemediationStatus": "Manual Intervention Required"
-            })
+            logger.warning(
+                "❌ CloudTrail: No active multi-region logging trail found in the account!"
+            )
+            findings.append(
+                {
+                    "Service": "CloudTrail",
+                    "Region": "global",
+                    "ResourceID": "CloudTrailLoggingStatus",
+                    "ResourceName": "AWS CloudTrail",
+                    "Status": "FAIL",
+                    "Finding": "No active multi-region CloudTrail trail logging is enabled in the account",
+                    "Severity": "High",
+                    "RemediationStatus": "Manual Intervention Required",
+                }
+            )
 
         return self._apply_severity_overrides(findings)
+
 
 def print_table(findings):
     """Formats and prints findings as a text table."""
@@ -1234,12 +1468,20 @@ def print_table(findings):
         logger.info("No findings to display.")
         return
 
-    headers = ["Service", "Region", "ResourceID", "Status", "Severity", "RemediationStatus", "Finding"]
+    headers = [
+        "Service",
+        "Region",
+        "ResourceID",
+        "Status",
+        "Severity",
+        "RemediationStatus",
+        "Finding",
+    ]
     widths = {h: len(h) for h in headers}
 
     for f in findings:
         for h in headers:
-            val = str(f.get(h, ''))
+            val = str(f.get(h, ""))
             if len(val) > widths[h]:
                 widths[h] = len(val)
 
@@ -1250,22 +1492,32 @@ def print_table(findings):
     print(row_format.format(*headers))
     print(border)
     for f in findings:
-        print(row_format.format(*[str(f.get(h, '')) for h in headers]))
+        print(row_format.format(*[str(f.get(h, "")) for h in headers]))
     print(border + "\n")
+
 
 def export_findings(findings, filename, fmt):
     """Exports findings to a file in the specified format."""
     try:
-        fields = ["Service", "Region", "ResourceID", "ResourceName", "Status", "Severity", "RemediationStatus", "Finding"]
+        fields = [
+            "Service",
+            "Region",
+            "ResourceID",
+            "ResourceName",
+            "Status",
+            "Severity",
+            "RemediationStatus",
+            "Finding",
+        ]
         if fmt == "json":
-            with open(filename, 'w') as f:
+            with open(filename, "w") as f:
                 json.dump(findings, f, indent=4)
         elif fmt == "csv":
-            with open(filename, 'w', newline='') as f:
+            with open(filename, "w", newline="") as f:
                 writer = csv.DictWriter(f, fieldnames=fields)
                 writer.writeheader()
                 for r in findings:
-                    row = {k: r.get(k, '') for k in fields}
+                    row = {k: r.get(k, "") for k in fields}
                     writer.writerow(row)
         elif fmt == "table":
             old_stdout = sys.stdout
@@ -1273,11 +1525,12 @@ def export_findings(findings, filename, fmt):
             print_table(findings)
             table_content = sys.stdout.getvalue()
             sys.stdout = old_stdout
-            with open(filename, 'w') as f:
+            with open(filename, "w") as f:
                 f.write(table_content)
         logger.info(f"Report successfully saved to {filename} in {fmt.upper()} format.")
     except Exception as e:
         logger.error(f"Failed to export report to {filename}: {e}")
+
 
 def send_slack_notification(webhook_url, findings):
     """Sends failed findings alert to Slack webhook with structured styling."""
@@ -1293,45 +1546,40 @@ def send_slack_notification(webhook_url, findings):
             "type": "section",
             "text": {
                 "type": "mrkdwn",
-                "text": f"{title}\nScanned at {datetime.datetime.now(datetime.timezone.utc).strftime('%Y-%m-%d %H:%M:%S UTC')}"
-            }
+                "text": f"{title}\nScanned at {datetime.datetime.now(datetime.timezone.utc).strftime('%Y-%m-%d %H:%M:%S UTC')}",
+            },
         },
-        {"type": "divider"}
+        {"type": "divider"},
     ]
 
     for f in failed[:10]:
-        severity_emoji = "🔴" if f.get('Severity') in ["Critical", "High"] else "🟡"
+        severity_emoji = "🔴" if f.get("Severity") in ["Critical", "High"] else "🟡"
         item_text = (
             f"{severity_emoji} *[{f.get('Severity', 'MEDIUM').upper()}] {f.get('Service')} Compliance Failure*\n"
             f"  • *Resource:* `{f.get('ResourceID')}` ({f.get('Region', 'global')})\n"
             f"  • *Finding:* {f.get('Finding')}\n"
             f"  • *Remediation:* `{f.get('RemediationStatus', 'N/A')}`"
         )
-        attachment_blocks.append({
-            "type": "section",
-            "text": {"type": "mrkdwn", "text": item_text}
-        })
+        attachment_blocks.append({"type": "section", "text": {"type": "mrkdwn", "text": item_text}})
 
     if len(failed) > 10:
-        attachment_blocks.append({
-            "type": "section",
-            "text": {"type": "mrkdwn", "text": f"_*...and {len(failed) - 10} more findings. Download full report for details.*_"}
-        })
-
-    payload = {
-        "attachments": [
+        attachment_blocks.append(
             {
-                "color": "#D70000",
-                "blocks": attachment_blocks
+                "type": "section",
+                "text": {
+                    "type": "mrkdwn",
+                    "text": f"_*...and {len(failed) - 10} more findings. Download full report for details.*_",
+                },
             }
-        ]
-    }
+        )
+
+    payload = {"attachments": [{"color": "#D70000", "blocks": attachment_blocks}]}
 
     try:
         req = urllib.request.Request(
             webhook_url,
-            data=json.dumps(payload).encode('utf-8'),
-            headers={'Content-Type': 'application/json'}
+            data=json.dumps(payload).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
         )
         with urllib.request.urlopen(req, timeout=10) as response:
             if response.status == 200:
@@ -1340,6 +1588,7 @@ def send_slack_notification(webhook_url, findings):
                 logger.error(f"Failed to send Slack notification: Status {response.status}")
     except Exception as e:
         logger.error(f"Error sending Slack notification: {e}")
+
 
 def send_teams_notification(webhook_url, findings):
     """Sends failed findings alert to Microsoft Teams webhook with structured styling."""
@@ -1355,7 +1604,7 @@ def send_teams_notification(webhook_url, findings):
         "summary": "AWS Sentinel Security Alert",
         "title": "🚨 AWS Sentinel Security Compliance Alerts",
         "text": f"Audit completed with **{len(failed)}** compliance failures.",
-        "sections": []
+        "sections": [],
     }
 
     # Group findings by severity
@@ -1375,28 +1624,32 @@ def send_teams_notification(webhook_url, findings):
         emoji = "🔴" if sev in ["Critical", "High"] else "🟡"
         section = {
             "activityTitle": f"{emoji} {sev} Severity Findings ({len(sev_findings)})",
-            "facts": []
+            "facts": [],
         }
 
         for f in sev_findings[:10]:
-            section["facts"].append({
-                "name": f"{f.get('Service')} ({f.get('Region', 'global')})",
-                "value": f"**Resource:** `{f.get('ResourceID')}`\n\n**Finding:** {f.get('Finding')}\n\n**Remediation:** {f.get('RemediationStatus', 'N/A')}"
-            })
+            section["facts"].append(
+                {
+                    "name": f"{f.get('Service')} ({f.get('Region', 'global')})",
+                    "value": f"**Resource:** `{f.get('ResourceID')}`\n\n**Finding:** {f.get('Finding')}\n\n**Remediation:** {f.get('RemediationStatus', 'N/A')}",
+                }
+            )
 
         if len(sev_findings) > 10:
-            section["facts"].append({
-                "name": "Truncated",
-                "value": f"...and {len(sev_findings) - 10} more {sev} findings."
-            })
+            section["facts"].append(
+                {
+                    "name": "Truncated",
+                    "value": f"...and {len(sev_findings) - 10} more {sev} findings.",
+                }
+            )
 
         payload["sections"].append(section)
 
     try:
         req = urllib.request.Request(
             webhook_url,
-            data=json.dumps(payload).encode('utf-8'),
-            headers={'Content-Type': 'application/json'}
+            data=json.dumps(payload).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
         )
         with urllib.request.urlopen(req, timeout=10) as response:
             if response.status in [200, 201]:
@@ -1406,85 +1659,75 @@ def send_teams_notification(webhook_url, findings):
     except Exception as e:
         logger.error(f"Error sending MS Teams notification: {e}")
 
+
 def main():
-    parser = argparse.ArgumentParser(description="AWS Sentinel: Automated Security Compliance Auditor")
+    parser = argparse.ArgumentParser(
+        description="AWS Sentinel: Automated Security Compliance Auditor"
+    )
     parser.add_argument(
         "--services",
         nargs="+",
         choices=["s3", "iam", "ec2", "ebs", "kms", "cloudtrail"],
         default=["s3", "iam", "ec2", "ebs", "kms", "cloudtrail"],
-        help="AWS services to audit (default: all)"
+        help="AWS services to audit (default: all)",
     )
     parser.add_argument(
         "--regions",
         nargs="+",
         default=[],
-        help="AWS regions to scan (e.g. us-east-1 us-west-2). Use 'all' to scan all active regions. Default: session region."
+        help="AWS regions to scan (e.g. us-east-1 us-west-2). Use 'all' to scan all active regions. Default: session region.",
     )
     parser.add_argument(
         "--remediate",
         action="store_true",
-        help="Attempt auto-remediation of detected compliance failures."
+        help="Attempt auto-remediation of detected compliance failures.",
     )
     parser.add_argument(
         "--dry-run",
         action="store_true",
-        help="Simulate remediation actions without applying them (must be used with --remediate)."
+        help="Simulate remediation actions without applying them (must be used with --remediate).",
     )
     parser.add_argument(
         "--format",
         choices=["table", "json", "csv"],
         default="table",
-        help="Output format (default: table)"
+        help="Output format (default: table)",
     )
-    parser.add_argument(
-        "--output-file",
-        help="Path to save the findings report"
-    )
+    parser.add_argument("--output-file", help="Path to save the findings report")
     parser.add_argument(
         "--log-level",
         choices=["DEBUG", "INFO", "WARNING", "ERROR"],
         default="INFO",
-        help="Set the logging level (default: INFO)"
+        help="Set the logging level (default: INFO)",
     )
     parser.add_argument(
         "--slack-webhook",
-        help="Slack Webhook URL to send alert notifications for compliance failures"
+        help="Slack Webhook URL to send alert notifications for compliance failures",
     )
     parser.add_argument(
         "--teams-webhook",
-        help="Microsoft Teams Webhook URL to send alert notifications for compliance failures"
+        help="Microsoft Teams Webhook URL to send alert notifications for compliance failures",
+    )
+    parser.add_argument("--config", help="Path to YAML/JSON configuration file")
+    parser.add_argument("--profile", help="AWS profile name to use for authentication")
+    parser.add_argument(
+        "--assume-role-arn", help="IAM Role ARN to assume for scanning a target AWS account"
     )
     parser.add_argument(
-        "--config",
-        help="Path to YAML/JSON configuration file"
+        "--assume-role-session-name", help="Session name to use when assuming the IAM role"
     )
     parser.add_argument(
-        "--profile",
-        help="AWS profile name to use for authentication"
-    )
-    parser.add_argument(
-        "--assume-role-arn",
-        help="IAM Role ARN to assume for scanning a target AWS account"
-    )
-    parser.add_argument(
-        "--assume-role-session-name",
-        help="Session name to use when assuming the IAM role"
-    )
-    parser.add_argument(
-        "--json-logging",
-        action="store_true",
-        help="Output logs in structured JSON format"
+        "--json-logging", action="store_true", help="Output logs in structured JSON format"
     )
     parser.add_argument(
         "--fail-on-findings",
         action="store_true",
-        help="Exit with non-zero status code (1) if any compliance failures (Status: FAIL) are found"
+        help="Exit with non-zero status code (1) if any compliance failures (Status: FAIL) are found",
     )
     parser.add_argument(
         "--fail-on-severity",
         choices=["Critical", "High", "Medium", "Low"],
-        help="Exit with non-zero status code (1) if failures at or above the given severity level are found"
+        help="Exit with non-zero status code (1) if failures at or above the given severity level are found",
     )
     args = parser.parse_args()
 
@@ -1492,7 +1735,9 @@ def main():
     logger.info("AWS Sentinel auditor initialized.")
 
     if args.dry_run and not args.remediate:
-        logger.warning("--dry-run specified without --remediate. It will have no effect on audit findings.")
+        logger.warning(
+            "--dry-run specified without --remediate. It will have no effect on audit findings."
+        )
 
     try:
         session = boto3.Session(profile_name=args.profile) if args.profile else None
@@ -1505,16 +1750,16 @@ def main():
         dry_run=args.dry_run,
         config_path=args.config,
         assume_role_arn=args.assume_role_arn,
-        assume_role_session_name=args.assume_role_session_name
+        assume_role_session_name=args.assume_role_session_name,
     )
 
     # Determine regions to scan
     scan_regions = []
     if any(s in args.services for s in ["ec2", "ebs", "kms"]):
         if not args.regions:
-            session_region = auditor.session.region_name or 'us-east-1'
+            session_region = auditor.session.region_name or "us-east-1"
             scan_regions = [session_region]
-        elif 'all' in [r.lower() for r in args.regions]:
+        elif "all" in [r.lower() for r in args.regions]:
             scan_regions = auditor.get_active_regions()
         else:
             scan_regions = args.regions
@@ -1535,7 +1780,9 @@ def main():
         all_findings.extend(auditor.audit_cloudtrail())
 
     failed_count = sum(1 for f in all_findings if f["Status"] == "FAIL")
-    logger.info(f"Audit completed. Total findings: {len(all_findings)}. Failures found: {failed_count}.")
+    logger.info(
+        f"Audit completed. Total findings: {len(all_findings)}. Failures found: {failed_count}."
+    )
 
     if args.output_file:
         export_findings(all_findings, args.output_file, args.format)
@@ -1546,11 +1793,20 @@ def main():
             print(json.dumps(all_findings, indent=4))
         elif args.format == "csv":
             output = io.StringIO()
-            fields = ["Service", "Region", "ResourceID", "ResourceName", "Status", "Severity", "RemediationStatus", "Finding"]
+            fields = [
+                "Service",
+                "Region",
+                "ResourceID",
+                "ResourceName",
+                "Status",
+                "Severity",
+                "RemediationStatus",
+                "Finding",
+            ]
             writer = csv.DictWriter(output, fieldnames=fields)
             writer.writeheader()
             for r in all_findings:
-                row = {k: r.get(k, '') for k in fields}
+                row = {k: r.get(k, "") for k in fields}
                 writer.writerow(row)
             print(output.getvalue())
 
@@ -1560,15 +1816,19 @@ def main():
         send_teams_notification(args.teams_webhook, all_findings)
 
     if args.fail_on_findings and failed_count > 0:
-        logger.error(f"Audit completed with {failed_count} failure(s). Exiting with code 1 as --fail-on-findings is set.")
+        logger.error(
+            f"Audit completed with {failed_count} failure(s). Exiting with code 1 as --fail-on-findings is set."
+        )
         sys.exit(1)
 
     if args.fail_on_severity:
         severity_hierarchy = {"Critical": 4, "High": 3, "Medium": 2, "Low": 1}
         threshold = severity_hierarchy.get(args.fail_on_severity, 3)
         qualifying_failures = [
-            f for f in all_findings
-            if f["Status"] == "FAIL" and severity_hierarchy.get(f.get("Severity", "Low"), 0) >= threshold
+            f
+            for f in all_findings
+            if f["Status"] == "FAIL"
+            and severity_hierarchy.get(f.get("Severity", "Low"), 0) >= threshold
         ]
         if qualifying_failures:
             logger.error(
@@ -1577,9 +1837,11 @@ def main():
             )
             sys.exit(1)
 
+
 def lambda_handler(event, context):
     """AWS Lambda entrypoint handler."""
     import os
+
     logger.info("AWS Sentinel auditor triggered via Lambda.")
     try:
         dry_run = os.environ.get("DRY_RUN", "False").lower() in ["true", "1", "yes"]
@@ -1597,7 +1859,7 @@ def lambda_handler(event, context):
             dry_run=dry_run,
             config_path=config_path,
             assume_role_arn=assume_role_arn,
-            assume_role_session_name=assume_role_session_name
+            assume_role_session_name=assume_role_session_name,
         )
 
         scan_regions = auditor.get_active_regions()
@@ -1611,7 +1873,9 @@ def lambda_handler(event, context):
         all_findings.extend(auditor.audit_cloudtrail())
 
         failed_count = sum(1 for f in all_findings if f["Status"] == "FAIL")
-        logger.info(f"Lambda Audit completed. Total findings: {len(all_findings)}. Failures found: {failed_count}.")
+        logger.info(
+            f"Lambda Audit completed. Total findings: {len(all_findings)}. Failures found: {failed_count}."
+        )
 
         if slack_webhook:
             send_slack_notification(slack_webhook, all_findings)
@@ -1620,19 +1884,12 @@ def lambda_handler(event, context):
 
         return {
             "statusCode": 200,
-            "body": json.dumps({
-                "total_findings": len(all_findings),
-                "failures": failed_count
-            })
+            "body": json.dumps({"total_findings": len(all_findings), "failures": failed_count}),
         }
     except Exception as e:
         logger.exception(f"Unhandled error during Lambda audit execution: {e}")
-        return {
-            "statusCode": 500,
-            "body": json.dumps({
-                "error": str(e)
-            })
-        }
+        return {"statusCode": 500, "body": json.dumps({"error": str(e)})}
+
 
 if __name__ == "__main__":
     main()
